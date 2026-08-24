@@ -118,14 +118,18 @@ def ai_rank_listings(listings):
 
 def call_live_search_provider(query):
     if not AI_LIVE_SEARCH_ENABLED:
+        print("Live search is disabled: AI_LIVE_SEARCH_ENABLED is not true.")
         return []
 
-    if SEARCH_PROVIDER == "tavily" and TAVILY_API_KEY:
+    if SEARCH_PROVIDER == "tavily":
+        if not TAVILY_API_KEY:
+            print("Tavily live search is not configured. Add the TAVILY_API_KEY environment variable or GitHub secret.")
+            return []
         try:
             response = requests.post(
                 "https://api.tavily.com/search",
-                headers={"Authorization": f"Bearer {TAVILY_API_KEY}"},
                 json={
+                    "api_key": TAVILY_API_KEY,
                     "query": query,
                     "max_results": 8,
                     "search_depth": "basic",
