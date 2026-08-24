@@ -208,6 +208,31 @@ def is_portal_url(url):
 def find_official_property_site(property_hint, address):
     if not TAVILY_API_KEY:
         return []
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability commute to Legend Biotech 08807',
+                "max_results": 5,
+                "search_depth": "advanced",
+                "include_raw_content": True,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "content": (item.get("raw_content") or item.get("content", ""))[:3000],
+            }
+            for item in response.json().get("results", [])
+            if item.get("url") and not is_portal_url(item["url"])
+        ]
+    except Exception as exc:
+        print(f"Official property-site lookup failed: {type(exc).__name__}: {exc!r}")
+        return []
 
 
 def find_commute_evidence(address):
@@ -439,7 +464,7 @@ def call_live_search_provider(query):
                         f"{candidate['title']} {candidate['content'][:500]}"
                     )
                     official_candidates.append(candidate)
-                    print(f"Official-site verification found {len(official_candidates)} candidate matches.")
+            print(f"Official-site verification found {len(official_candidates)} candidate matches.")
             enriched = ai_enrich_listings(official_candidates)
             print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
             return enriched
