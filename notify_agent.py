@@ -76,6 +76,28 @@ def build_listing_id(url: str) -> str:
     return slug or f"listing_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
 
+def extract_price(text):
+    matches = re.findall(
+        r"\$\s?[0-9][0-9,]*(?:\s?[-+]\s?\$?[0-9][0-9,]*)?",
+        text or "",
+    )
+    return matches[0].strip() if matches else ""
+
+
+def extract_phone(text):
+    match = re.search(r"(?:\+?1[\s.-]?)?\(?[2-9][0-9]{2}\)?[\s.-][0-9]{3}[\s.-][0-9]{4}", text or "")
+    return match.group(0).strip() if match else ""
+
+
+def extract_drive_time(text):
+    match = re.search(r"(?:approximately\s+|about\s+)?(\d{1,2})(?:\s?[-\u2013]\s?(\d{1,2}))?\s+minutes?\s+(?:drive|driving)", text or "", re.IGNORECASE)
+    if not match:
+        return ""
+    if match.group(2):
+        return f"{match.group(1)}-{match.group(2)} min drive to 08807"
+    return f"{match.group(1)} min drive to 08807"
+
+
 def ai_rank_listings(listings):
     if not AI_LIVE_SEARCH_ENABLED or not OPENAI_API_KEY or not listings:
         return listings
@@ -129,29 +151,33 @@ def call_live_search_provider(query):
                 "https://api.tavily.com/search",
                 json={
                     "api_key": TAVILY_API_KEY,
-                    "query": query,
+                    "query": query + " Include current rent, leasing office phone, and driving time to 08807.",
                     "max_results": 8,
-                    "search_depth": "basic",
+                    "search_depth": "advanced",
+                    "include_answer": True,
                 },
                 timeout=45,
             )
             response.raise_for_status()
             results = response.json().get("results", [])
             print(f"Tavily returned {len(results)} live search results.")
-            return [
-                {
-                    "id": build_listing_id(item.get("url", "")) or item.get("title", "").lower().replace(" ", "_"),
+            listings = []
+            for item in results:
+                content = f"{item.get('title', '')} {item.get('content', '')}"
+                price = extract_price(content)
+                if not item.get("url") or not price:
+                    continue
+                listings.append({
+                    "id": build_listing_id(item["url"]),
                     "name": item.get("title", "Apartment Listing"),
                     "type": f"{MIN_BEDS} Bed / 2 Bath",
-                    "price": next(iter(re.findall(r"\$\s?[0-9][0-9,]*(?:\s?[-+]\s?\$?[0-9][0-9,]*)?", item.get("content", ""))), "Price needs verification"),
+                    "price": price,
                     "amenities": item.get("content", "Live search result")[:500],
-                    "commute": SEARCH_LOCATION,
-                    "contact": "N/A",
-                    "link": item.get("url", ""),
-                }
-                for item in results
-                if item.get("url")
-            ]
+                    "commute": extract_drive_time(content) or "Within 25 min target; verify route",
+                    "contact": extract_phone(content) or "Leasing office: see listing",
+                    "link": item["url"],
+                })
+            return listings
         except Exception as exc:
             print(f"Tavily live search failed: {exc}")
 
@@ -274,7 +300,7 @@ def load_live_listings():
 def update_csv_database(new_listings):
     file_exists = os.path.exists(CSV_DATABASE)
     fieldnames = [
-        "id", "name", "type", "price", "amenities",
+        "id", "apt_name", "type", "price", "amenities",
         "commute", "contact", "link", "first_seen_date",
     ]
     existing_rows = {}
@@ -282,6 +308,8 @@ def update_csv_database(new_listings):
         with open(CSV_DATABASE, mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
+                if "name" in row and "apt_name" not in row:
+                    row["apt_name"] = row.pop("name")
                 existing_rows[row["id"]] = row
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -289,15 +317,18 @@ def update_csv_database(new_listings):
         item_id = item["id"]
         if item_id in existing_rows:
             existing_rows[item_id].update({
+                "apt_name": item.get("name", existing_rows[item_id].get("apt_name", "")),
+                "type": item.get("type", existing_rows[item_id].get("type", "")),
                 "price": item.get("price", existing_rows[item_id]["price"]),
                 "amenities": item.get("amenities", existing_rows[item_id].get("amenities", "")),
+                "commute": item.get("commute", existing_rows[item_id].get("commute", "")),
                 "contact": item.get("contact", existing_rows[item_id].get("contact", "")),
                 "link": item.get("link", existing_rows[item_id]["link"]),
             })
         else:
             existing_rows[item_id] = {
                 "id": item_id,
-                "name": item.get("name"),
+                "apt_name": item.get("name"),
                 "type": item.get("type"),
                 "price": item.get("price"),
                 "amenities": item.get("amenities", "In-unit laundry, Disposal"),
@@ -376,7 +407,7 @@ def run_scan(dry_run=False):
             <table style="width: 100%; border-collapse: collapse; margin-top: 14px; margin-bottom: 15px;">
                 <thead>
                     <tr style="background-color: #edf2f7; text-align: left;">
-                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Community</th>
+                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Apt name</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Type</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Price</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Amenities</th>
