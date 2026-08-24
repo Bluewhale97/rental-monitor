@@ -290,10 +290,13 @@ def ai_enrich_listings(search_results):
                 for source in item.get("official_sources", [])
             }
             cleaned = []
+            rejection_counts = {}
             for item in parsed:
                 if not isinstance(item, dict) or item.get("link") not in allowed_links:
+                    rejection_counts["invalid or non-official link"] = rejection_counts.get("invalid or non-official link", 0) + 1
                     continue
                 if not all(item.get(field) for field in ("property", "address", "sq_ft", "type", "price", "commute", "contact", "availability")):
+                    rejection_counts["missing required field"] = rejection_counts.get("missing required field", 0) + 1
                     continue
                 area_match = re.search(r"[0-9][0-9,]*", str(item["sq_ft"]))
                 official_evidence = " ".join(
@@ -309,16 +312,22 @@ def ai_enrich_listings(search_results):
                 )
                 evidence = f"{candidate_evidence} {official_evidence}"
                 if not area_match or area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
+                    rejection_counts["square footage not supported"] = rejection_counts.get("square footage not supported", 0) + 1
                     continue
                 if not re.match(rf"^(Yes|No) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
+                    rejection_counts["move-in date not supported"] = rejection_counts.get("move-in date not supported", 0) + 1
                     continue
                 if not re.search(r"\b2b\d+(?:\.\d+)?b\b", str(item["type"]).lower()):
+                    rejection_counts["bedroom or bathroom type invalid"] = rejection_counts.get("bedroom or bathroom type invalid", 0) + 1
                     continue
                 if not price_is_within_budget(item["price"]):
+                    rejection_counts["over budget"] = rejection_counts.get("over budget", 0) + 1
                     continue
                 if not price_is_supported(item["price"], evidence):
+                    rejection_counts["price not supported"] = rejection_counts.get("price not supported", 0) + 1
                     continue
                 if not commute_is_within_limit(item["commute"]):
+                    rejection_counts["commute invalid or over limit"] = rejection_counts.get("commute invalid or over limit", 0) + 1
                     continue
                 contact = normalize_contact(item.get("contact"))
                 if (
@@ -327,18 +336,23 @@ def ai_enrich_listings(search_results):
                     or not extract_phone(contact)
                     or not extract_email(contact)
                 ):
+                    rejection_counts["phone or email missing"] = rejection_counts.get("phone or email missing", 0) + 1
                     continue
                 if extract_phone(contact) not in evidence or extract_email(contact) not in evidence:
+                    rejection_counts["phone or email not supported"] = rejection_counts.get("phone or email not supported", 0) + 1
                     continue
                 item["id"] = build_listing_id(item["link"])
                 item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
                 item["contact"] = contact
                 if not has_required_amenities(item["amenities"]):
+                    rejection_counts["in-unit laundry not confirmed"] = rejection_counts.get("in-unit laundry not confirmed", 0) + 1
                     continue
                 if is_portal_url(item["link"]):
+                    rejection_counts["final link is a portal"] = rejection_counts.get("final link is a portal", 0) + 1
                     continue
                 cleaned.append(item)
+            print(f"AI accepted {len(cleaned)} verified property records; rejection details: {rejection_counts or 'none'}")
             return cleaned
     except Exception as exc:
         print(f"Deep property extraction failed: {type(exc).__name__}: {exc!r}")
@@ -392,11 +406,13 @@ def call_live_search_provider(query):
                     "link": item["url"],
                 })
             official_candidates = []
+            print(f"Tavily produced {len(candidates)} candidates with usable URLs; checking up to 25 official-site matches.")
             for candidate in candidates[:25]:
                 official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
                 if official_sources:
                     candidate["official_sources"] = official_sources
                     official_candidates.append(candidate)
+                    print(f"Official-site verification found {len(official_candidates)} candidate matches.")
             enriched = ai_enrich_listings(official_candidates)
             print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
             return enriched
