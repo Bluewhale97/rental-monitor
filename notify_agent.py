@@ -98,6 +98,40 @@ def extract_drive_time(text):
     return f"{match.group(1)} min drive to 08807"
 
 
+def format_amenities(value):
+    labels = [
+        "In-unit laundry",
+        "Garbage disposal",
+        "Gym",
+        "Pool",
+        "Move-in special",
+        "Mandatory fees",
+    ]
+    if isinstance(value, dict):
+        normalized = {str(key).lower().replace("_", " "): str(item).lower() for key, item in value.items()}
+        aliases = {
+            "in-unit laundry": ("in-unit laundry", "laundry", "washer dryer"),
+            "garbage disposal": ("garbage disposal", "disposal"),
+            "gym": ("gym", "fitness center", "fitness"),
+            "pool": ("pool", "swimming pool"),
+            "move-in special": ("move-in special", "move in special", "move-in specials"),
+            "mandatory fees": ("mandatory fees", "fees", "monthly fees"),
+        }
+        return "; ".join(
+            f"{label}: {next((normalized[key].title() for key in aliases[label.lower()] if key in normalized), 'Not listed')}"
+            for label in labels
+        )
+    return str(value or "Not listed")
+
+
+def normalize_contact(value):
+    if isinstance(value, dict):
+        phone = value.get("phone")
+        url = value.get("url")
+        return " | ".join(part for part in (phone, url) if part) or "Not listed"
+    return str(value or "Not listed")
+
+
 def ai_enrich_listings(search_results):
     if not OPENAI_API_KEY or not search_results:
         print("Deep property extraction requires the OPENAI_API_KEY secret.")
@@ -151,6 +185,8 @@ def ai_enrich_listings(search_results):
                 if not all(item.get(field) for field in ("property", "address", "price", "commute", "contact")):
                     continue
                 item["id"] = build_listing_id(item["link"])
+                item["amenities"] = format_amenities(item.get("amenities"))
+                item["contact"] = normalize_contact(item.get("contact"))
                 cleaned.append(item)
             return cleaned
     except Exception as exc:
@@ -331,9 +367,13 @@ def update_csv_database(new_listings):
             for row in reader:
                 if "name" in row and "property" not in row:
                     row["property"] = row.pop("name")
+                if "apt_name" in row and "property" not in row:
+                    row["property"] = row.pop("apt_name")
                 row.setdefault("address", "")
                 if not row.get("property") or not row.get("address"):
                     continue
+                row["amenities"] = format_amenities(row.get("amenities"))
+                row["contact"] = normalize_contact(row.get("contact"))
                 existing_rows[row["id"]] = row
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -357,9 +397,9 @@ def update_csv_database(new_listings):
                 "address": item.get("address"),
                 "type": item.get("type"),
                 "price": item.get("price"),
-                "amenities": item.get("amenities", "In-unit laundry, Disposal"),
+                "amenities": format_amenities(item.get("amenities")),
                 "commute": item.get("commute"),
-                "contact": item.get("contact", "N/A"),
+                "contact": normalize_contact(item.get("contact")),
                 "link": item.get("link"),
                 "first_seen_date": today,
             }
