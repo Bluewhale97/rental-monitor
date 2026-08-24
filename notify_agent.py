@@ -125,7 +125,7 @@ def commute_is_within_limit(commute):
 
 def has_required_amenities(amenities):
     text = str(amenities).lower()
-    return "in-unit laundry: yes" in text and "garbage disposal: yes" in text
+    return "in-unit laundry: yes" in text
 
 
 def format_amenities(value):
@@ -227,7 +227,7 @@ def ai_enrich_listings(search_results):
             "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
             "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
-            "In-unit laundry and garbage disposal are mandatory and must be confirmed Yes; exclude records where either is not confirmed. "
+            "In-unit laundry is mandatory and must be confirmed Yes; garbage disposal is preferred but optional, so report Yes, No, or Not listed. "
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, unit, type, price, amenities, commute, contact, availability, action, link. "
             "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
