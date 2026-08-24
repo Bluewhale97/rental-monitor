@@ -14,6 +14,7 @@ RECEIVER_EMAILS = ["stanley.z4r@gmail.com"]
 
 HISTORY_FILE = "sent_listings.json"
 CSV_DATABASE = "rental_database.csv"
+LIVE_LISTINGS_FILE = "live_listings.json"
 
 def load_sent_listings():
     if os.path.exists(HISTORY_FILE):
@@ -27,6 +28,16 @@ def load_sent_listings():
 def save_sent_listings(sent_list):
     with open(HISTORY_FILE, "w") as f:
         json.dump(sent_list, f, indent=4)
+
+def load_live_listings():
+    """Reads real-time listings populated via live search."""
+    if os.path.exists(LIVE_LISTINGS_FILE):
+        with open(LIVE_LISTINGS_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
 
 def update_csv_database(new_listings):
     file_exists = os.path.exists(CSV_DATABASE)
@@ -92,31 +103,10 @@ def send_email_notification(subject, html_content, dry_run=False):
         print(f"Failed to send email: {e}")
         return False
 
-def fetch_real_listings():
-    """
-    Modular data ingestion point. 
-    Connect your scraper or API client here to dynamically pull real listings.
-    Must return a list of dictionaries matching the schema.
-    """
-    listings = []
-    
-    # Example placeholder structure for future integration:
-    # listings.append({
-    #     "id": "unique_property_id",
-    #     "name": "Community Name",
-    #     "type": "Apartment Community",
-    #     "price": "$2,800",
-    #     "amenities": "In-unit laundry, Disposal",
-    #     "commute": "~10 mins",
-    #     "contact": "(555) 000-0000",
-    #     "link": "https://example.com/property"
-    # })
-    
-    return listings
-
-def run_scan(listings_input, dry_run=False):
+def run_scan(dry_run=False):
+    listings_input = load_live_listings()
     if not listings_input:
-        print("No listings found during this execution cycle.")
+        print("No live search listings found in live_listings.json.")
         return
 
     update_csv_database(listings_input)
@@ -148,7 +138,7 @@ def run_scan(listings_input, dry_run=False):
     <body style="font-family: Arial, sans-serif; background-color: #f7fafc; margin: 0; padding: 20px;">
         <div style="max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
             <h2 style="color: #2d3748; margin-top: 0; border-bottom: 2px solid #edf2f7; padding-bottom: 10px; font-size: 18px;">
-                🎯 Rental Alert: {len(unsent_listings)} New Match(es)
+                🎯 [08807 Rental Radar] {len(unsent_listings)} New Match(es) Found
             </h2>
             <table style="width: 100%; border-collapse: collapse; margin-top: 14px; margin-bottom: 15px;">
                 <thead>
@@ -167,14 +157,14 @@ def run_scan(listings_input, dry_run=False):
                 </tbody>
             </table>
             <p style="color: #a0aec0; font-size: 11px; text-align: center; margin-bottom: 0;">
-                Automated Rental Intelligence System
+                Automated Rental Intelligence System • Target: 08807 (Dec 1 Move-in)
             </p>
         </div>
     </body>
     </html>
     """
 
-    subject = f"🎯 [Rental Radar] {len(unsent_listings)} New Property Match(es) Found!"
+    subject = f"🎯 [08807 Rental Radar] {len(unsent_listings)} New Property Match(es) Found!"
     
     if send_email_notification(subject, html_content, dry_run=dry_run):
         for item in unsent_listings:
@@ -182,5 +172,4 @@ def run_scan(listings_input, dry_run=False):
         save_sent_listings(sent_listings)
 
 if __name__ == "__main__":
-    live_listings = fetch_real_listings()
-    run_scan(live_listings, dry_run=False)
+    run_scan(dry_run=False)
