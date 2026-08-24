@@ -218,146 +218,151 @@ def is_portal_url(url):
     return any(hostname == domain or hostname.endswith(f".{domain}") for domain in PORTAL_DOMAINS)
 
 
-def ai_verify_property_page(candidate):
-    if not OPENAI_API_KEY or not candidate.get("link"):
-        return candidate
+def extract_property_name_from_result(item):
+    title = (item.get("title") or item.get("property") or "").strip()
+    if title:
+        return re.sub(r"\s*\|\s*.*$", "", title).strip()
+    return ""
 
+
+def ai_search_property_links(property_name):
+    if not property_name or not OPENAI_API_KEY:
+        return []
     try:
-        page_response = requests.get(candidate["link"], headers=HEADERS, timeout=20)
-        page_response.raise_for_status()
-        soup = BeautifulSoup(page_response.text, "html.parser")
-        page_text = " ".join(soup.stripped_strings)[:12000]
-        prompt = (
-            "You are checking whether this property page matches the rental requirements. "
-            "Use only evidence on the property website. Do not guess. Return valid JSON with keys: "
-            "property, address, sq_ft, type, price, amenities, commute, contact, availability, link. "
-            "If a value is absent on the page, set it to 'Not listed'. "
-            "The commute must be 'X min drive to Legend Biotech (08807)' only when the page clearly states it. "
-            "In-unit laundry must be Yes/No/Not listed. Garbage disposal yes/no/not listed. "
-            "For type, use 'Apartment - 2b2b' or 'Townhouse - 2b2.5b' when possible. "
-            f"The target move-in date is {MOVE_IN_DATE}. Availability must be 'Yes - {MOVE_IN_DATE}', 'No - {MOVE_IN_DATE}', or 'Not confirmed - {MOVE_IN_DATE}'. "
-            "Amenities should be a single plain string with these exact labels: "
-            "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
-            "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
-            "Use only evidence from the website, not from the search listing snippet.\n\nPROPERTY PAGE:\n"
-            + page_text
-        )
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": "Return a JSON object only, no markdown."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.1,
-        }
         response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
+            "https://api.openai.com/v1/responses",
             headers={
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
                 "Content-Type": "application/json",
             },
-            json=payload,
-            timeout=45,
+            json={
+                "model": "gpt-4o-mini",
+                "input": (
+                    f"Find the official website and the best matching rental listing for '{property_name}' in Bridgewater, NJ or nearby Somerset County. "
+                    "Return JSON only with a list of objects using 'name', 'link', 'source', 'reason'."
+                ),
+                "tools": [{"type": "web_search_preview"}],
+            },
+            timeout=60,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+        content = response.json().get("output_text") or "[]"
         parsed = json.loads(content)
-        if isinstance(parsed, dict):
-            for key, value in parsed.items():
-                candidate[key] = value
-            candidate["link"] = candidate.get("link") or candidate.get("url")
-            candidate["id"] = build_listing_id(candidate["link"])
-            candidate["amenities"] = format_amenities(candidate.get("amenities"))
-            candidate["contact"] = normalize_contact(candidate.get("contact"))
-            candidate["availability"] = candidate.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
-            candidate["action"] = "appointment"
+        if isinstance(parsed, list):
+            return [entry.get("link") for entry in parsed if isinstance(entry, dict) and entry.get("link")]
     except Exception as exc:
-        print(f"Property page verification failed for {candidate.get('link')}: {type(exc).__name__}: {exc!r}")
-    return candidate
+        print(f"AI follow-up search for property '{property_name}' failed: {type(exc).__name__}: {exc!r}")
+    return []
+
+
+def fetch_property_page_details(property_name, url):
+    if not url:
+        return {}
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=25)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        text = " ".join(soup.stripped_strings)
+        if not text:
+            return {}
+        match = {
+            "property": property_name,
+            "address": re.search(r"(?:\d+\s+[A-Za-z0-9.]+(?:\s+[A-Za-z0-9.]+)*,?\s*(?:Bridgewater|Somerset|Bound Brook|Somerville|Franklin|Hillsborough)[^\n]{0,120})", text, re.IGNORECASE),
+            "price": re.search(r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?", text),
+            "sq_ft": re.search(r"(?:\d[\d,]*)\s*(?:sq\.?\s*ft\.?|square\s+feet)", text, re.IGNORECASE),
+            "type": re.search(r"(?:Apartment|Townhouse|Condo|Unit)[^\n]{0,30}(?:\d\s*b\s*\d|\d\.\d\s*b)", text, re.IGNORECASE),
+            "phone": extract_phone(text),
+            "commute": extract_drive_time(text),
+        }
+
+        parsed = {
+            "id": build_listing_id(url),
+            "property": property_name,
+            "address": match["address"].group(0).strip() if match["address"] else "Not listed",
+            "sq_ft": match["sq_ft"].group(0).strip() if match["sq_ft"] else "Not listed",
+            "type": match["type"].group(0).strip() if match["type"] else "Apartment - 2b2b",
+            "price": match["price"].group(0).strip() if match["price"] else "Price not listed",
+            "amenities": "In-unit laundry: Not listed; Garbage disposal: Not listed; Gym: Not listed; Pool: Not listed; Move-in special: Not listed; Mandatory fees: Not listed",
+            "commute": match["commute"] or "Not listed",
+            "contact": f"Phone: {match['phone']}" if match["phone"] else "Not listed",
+            "availability": f"Not confirmed - {MOVE_IN_DATE}",
+            "action": "appointment",
+            "link": url,
+        }
+        if "laundry" in text.lower():
+            parsed["amenities"] = parsed["amenities"].replace("In-unit laundry: Not listed", "In-unit laundry: Yes")
+        if "garbage disposal" in text.lower() or "disposal" in text.lower():
+            parsed["amenities"] = parsed["amenities"].replace("Garbage disposal: Not listed", "Garbage disposal: Yes")
+        if "in-unit washer" in text.lower() or "washer and dryer" in text.lower() or "washer/dryer" in text.lower():
+            parsed["amenities"] = parsed["amenities"].replace("In-unit laundry: Not listed", "In-unit laundry: Yes")
+        if "gym" in text.lower() or "fitness center" in text.lower():
+            parsed["amenities"] = parsed["amenities"].replace("Gym: Not listed", "Gym: Yes")
+        return parsed
+    except Exception as exc:
+        print(f"Direct property fetch failed for {property_name} at {url}: {type(exc).__name__}: {exc!r}")
+        return {}
 
 
 def ai_enrich_listings(search_results):
-    if not OPENAI_API_KEY or not search_results:
-        print("Deep property extraction requires the OPENAI_API_KEY secret.")
+    if not search_results:
         return []
 
-    if not AI_LIVE_SEARCH_ENABLED:
-        return []
+    seen = set()
+    cleaned = []
+    tried_names = set()
 
-    try:
-        prompt = (
-            "You are a rental research assistant. Review every supplied live-search result and extract every plausible rental property candidate. "
-            "Do not reject candidates because price, commute, area, availability, amenities, or contact information is missing. "
-            "Use 'Not listed' or 'Not confirmed' for missing details. Exclude only obvious non-rental pages. "
-            "Do not infer or invent facts. Use only evidence in each result. "
-            "In-unit laundry is mandatory and must be confirmed Yes; garbage disposal is preferred but optional, so report Yes, No, or Not listed. "
-            f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
-            "property should be the actual community/property name when the evidence provides it, otherwise use the best property identity supported by the result. "
-            "link must exactly match one supplied source URL. Commute must say '<number> min drive to Legend Biotech (08807)' when supported, otherwise use 'Not listed'. "
-            "Contact should include a leasing office phone and/or email from the supplied source evidence, formatted as 'Phone: ...; Email: ...'. Use 'Not listed' for a contact method absent from evidence. The source link may be a listing portal because the user will investigate the property independently. "
-            "sq_ft must contain the published area in square feet, or 'Not listed' when absent. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
-            f"availability must be 'Yes - {MOVE_IN_DATE}' or 'No - {MOVE_IN_DATE}' when the source confirms that date; otherwise use 'Not confirmed - {MOVE_IN_DATE}' so the property can still be monitored. "
-            "Set action exactly to 'appointment'. Format amenities as one plain string with these exact labels: "
-            "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
-            "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
-            "Use Not listed when the source does not say; never guess.\n\nSEARCH RESULTS:\n"
-            + json.dumps(search_results[:15], indent=2)
-        )
-        payload = {
-            "model": "gpt-4o-mini",
-            "messages": [
-                {"role": "system", "content": "Return valid JSON only. Never use markdown fences."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2,
-        }
-        response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=45,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        print(f"OpenAI returned {len(content)} characters for property extraction.")
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
-        parsed = json.loads(content)
-        if isinstance(parsed, list):
-            print(f"OpenAI parsed {len(parsed)} candidate records before validation.")
-            cleaned = []
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                link = item.get("link")
-                if not link:
-                    continue
-                item["id"] = build_listing_id(link)
-                item["property"] = item.get("property") or "Property name not listed"
-                item["address"] = item.get("address") or "Address not listed"
-                item["sq_ft"] = item.get("sq_ft") or "Not listed"
-                item["type"] = item.get("type") or "Rental type not listed"
-                item["price"] = item.get("price") or "Price not listed"
-                item["commute"] = item.get("commute") or "Not listed"
-                item["contact"] = normalize_contact(item.get("contact"))
-                item["availability"] = item.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
-                item["action"] = "appointment"
-                item["amenities"] = format_amenities(item.get("amenities"))
-                item = ai_verify_property_page(item)
-                required_fields = [item.get("property"), item.get("address"), item.get("type"), item.get("price"), item.get("commute"), item.get("contact")]
-                if any((value is None or str(value).lower() in {"not listed", "not confirmed", "not available", "address not listed", "price not listed", "rental type not listed", "property name not listed"}) for value in required_fields):
-                    continue
-                cleaned.append(item)
-            print(f"AI retained {len(cleaned)} rental candidates after property-page verification.")
-            return cleaned
-    except Exception as exc:
-        print(f"Deep property extraction failed: {type(exc).__name__}: {exc!r}")
-    return []
+    for result in search_results:
+        property_name = extract_property_name_from_result(result)
+        if not property_name or property_name.lower() in tried_names:
+            continue
+        tried_names.add(property_name.lower())
+
+        candidate_urls = []
+        title_url = result.get("link")
+        if title_url:
+            candidate_urls.append(title_url)
+
+        if TAVILY_API_KEY:
+            try:
+                tavily_response = requests.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": TAVILY_API_KEY,
+                        "query": f'"{property_name}" official website 2 bedroom apartment Bridgewater NJ 08807',
+                        "max_results": 10,
+                        "search_depth": "basic",
+                        "include_answer": True,
+                        "include_raw_content": True,
+                    },
+                    timeout=45,
+                )
+                tavily_response.raise_for_status()
+                for item in tavily_response.json().get("results", []):
+                    url = item.get("url")
+                    if url and url not in candidate_urls:
+                        candidate_urls.append(url)
+            except Exception as exc:
+                print(f"Tavily follow-up search failed for {property_name}: {type(exc).__name__}: {exc!r}")
+
+        if OPENAI_API_KEY:
+            for url in ai_search_property_links(property_name):
+                if url not in candidate_urls:
+                    candidate_urls.append(url)
+
+        for candidate_url in candidate_urls:
+            detail = fetch_property_page_details(property_name, candidate_url)
+            if not detail:
+                continue
+            if detail["id"] in seen:
+                continue
+            if detail["address"] == "Not listed" and detail["price"] == "Price not listed":
+                continue
+            seen.add(detail["id"])
+            cleaned.append(detail)
+            break
+
+    print(f"Property-name-first verification kept {len(cleaned)} records from official property pages or follow-up venue searches.")
+    return cleaned
 
 
 def call_live_search_provider(query):
