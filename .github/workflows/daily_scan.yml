@@ -8,7 +8,8 @@ on:
 jobs:
   rental-monitor:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,3 +30,10 @@ jobs:
           RENT_SENDER_PASSWORD: ${{ secrets.RENT_SENDER_PASSWORD }}
         run: |
           python notify_agent.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add rental_database.csv sent_listings.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update rental database and history [skip ci]" && git push)
