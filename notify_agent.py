@@ -140,10 +140,17 @@ def price_is_supported(price, evidence):
 
 
 def commute_is_within_limit(commute):
-    match = re.search(r"(\d{1,2})(?:\s?[-\u2013]\s?(\d{1,2}))?\s+min", str(commute), re.IGNORECASE)
+    match = re.search(r"(\d{1,2})(?:\s?[\-\u2013]\s?(\d{1,2}))?\s*[-]?\s*(?:min(?:ute)?s?|hour(?:s)?)", str(commute), re.IGNORECASE)
     if not match:
         return False
+    if match.group(0).lower().find("hour") >= 0:
+        return False
     return int(match.group(2) or match.group(1)) <= COMMUTE_LIMIT
+
+
+def canonical_url(url):
+    parsed = urlparse(str(url).strip())
+    return parsed._replace(path=parsed.path.rstrip("/")).geturl()
 
 
 def has_required_amenities(amenities):
@@ -337,14 +344,14 @@ def ai_enrich_listings(search_results):
         parsed = json.loads(content)
         if isinstance(parsed, list):
             allowed_links = {
-                source.get("url")
+                canonical_url(source.get("url")): source.get("url")
                 for item in search_results
                 for source in item.get("official_sources", [])
             }
             cleaned = []
             rejection_counts = {}
             for item in parsed:
-                if not isinstance(item, dict) or item.get("link") not in allowed_links:
+                if not isinstance(item, dict) or canonical_url(item.get("link")) not in allowed_links:
                     rejection_counts["invalid or non-official link"] = rejection_counts.get("invalid or non-official link", 0) + 1
                     continue
                 if not all(item.get(field) for field in ("property", "address", "type", "price", "commute", "contact", "availability")):
@@ -355,12 +362,12 @@ def ai_enrich_listings(search_results):
                     source.get("content", "")
                     for result in search_results
                     for source in result.get("official_sources", [])
-                    if source.get("url") == item.get("link")
+                    if canonical_url(source.get("url")) == canonical_url(item.get("link"))
                 )
                 candidate_evidence = " ".join(
                     f"{result.get('content', '')} {result.get('commute_evidence', '')}"
                     for result in search_results
-                    if any(source.get("url") == item.get("link") for source in result.get("official_sources", []))
+                    if any(canonical_url(source.get("url")) == canonical_url(item.get("link")) for source in result.get("official_sources", []))
                 )
                 evidence = f"{candidate_evidence} {official_evidence}"
                 if area_match and area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
@@ -391,6 +398,7 @@ def ai_enrich_listings(search_results):
                     rejection_counts["phone or email not supported"] = rejection_counts.get("phone or email not supported", 0) + 1
                     continue
                 item["id"] = build_listing_id(item["link"])
+                item["link"] = allowed_links[canonical_url(item["link"])]
                 item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
                 item["contact"] = contact
