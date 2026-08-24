@@ -45,6 +45,12 @@ SEARCH_QUERIES = [
     f"2 bedroom apartment community website Somerset County NJ in-unit laundry leasing office",
     f"2 bedroom rental community October 31 2026 Somerset County NJ official website",
 ]
+GENERAL_MATCH_QUERIES = [
+    f"2 bedroom apartments near {SEARCH_LOCATION} 08807 in-unit laundry official property website",
+    f"managed 2 bedroom townhomes near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} official leasing office",
+    f"2 bedroom rental communities Somerset County NJ with in-unit laundry and 30 minute commute to 08807",
+    f"Bridgewater NJ apartment communities 2 bed 2 bath in-unit laundry official website",
+]
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -212,6 +218,66 @@ def is_portal_url(url):
     return any(hostname == domain or hostname.endswith(f".{domain}") for domain in PORTAL_DOMAINS)
 
 
+def ai_verify_property_page(candidate):
+    if not OPENAI_API_KEY or not candidate.get("link"):
+        return candidate
+
+    try:
+        page_response = requests.get(candidate["link"], headers=HEADERS, timeout=20)
+        page_response.raise_for_status()
+        soup = BeautifulSoup(page_response.text, "html.parser")
+        page_text = " ".join(soup.stripped_strings)[:12000]
+        prompt = (
+            "You are checking whether this property page matches the rental requirements. "
+            "Use only evidence on the property website. Do not guess. Return valid JSON with keys: "
+            "property, address, sq_ft, type, price, amenities, commute, contact, availability, link. "
+            "If a value is absent on the page, set it to 'Not listed'. "
+            "The commute must be 'X min drive to Legend Biotech (08807)' only when the page clearly states it. "
+            "In-unit laundry must be Yes/No/Not listed. Garbage disposal yes/no/not listed. "
+            "For type, use 'Apartment - 2b2b' or 'Townhouse - 2b2.5b' when possible. "
+            f"The target move-in date is {MOVE_IN_DATE}. Availability must be 'Yes - {MOVE_IN_DATE}', 'No - {MOVE_IN_DATE}', or 'Not confirmed - {MOVE_IN_DATE}'. "
+            "Amenities should be a single plain string with these exact labels: "
+            "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
+            "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
+            "Use only evidence from the website, not from the search listing snippet.\n\nPROPERTY PAGE:\n"
+            + page_text
+        )
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "Return a JSON object only, no markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+        }
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=45,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            for key, value in parsed.items():
+                candidate[key] = value
+            candidate["link"] = candidate.get("link") or candidate.get("url")
+            candidate["id"] = build_listing_id(candidate["link"])
+            candidate["amenities"] = format_amenities(candidate.get("amenities"))
+            candidate["contact"] = normalize_contact(candidate.get("contact"))
+            candidate["availability"] = candidate.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
+            candidate["action"] = "appointment"
+    except Exception as exc:
+        print(f"Property page verification failed for {candidate.get('link')}: {type(exc).__name__}: {exc!r}")
+    return candidate
+
+
 def ai_enrich_listings(search_results):
     if not OPENAI_API_KEY or not search_results:
         print("Deep property extraction requires the OPENAI_API_KEY secret.")
@@ -230,8 +296,7 @@ def ai_enrich_listings(search_results):
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
             "property should be the actual community/property name when the evidence provides it, otherwise use the best property identity supported by the result. "
             "link must exactly match one supplied source URL. Commute must say '<number> min drive to Legend Biotech (08807)' when supported, otherwise use 'Not listed'. "
-            "Contact should include a leasing "
-            "office phone and/or email from the supplied source evidence, formatted as 'Phone: ...; Email: ...'. Use 'Not listed' for a contact method absent from evidence. The source link may be a listing portal because the user will investigate the property independently. "
+            "Contact should include a leasing office phone and/or email from the supplied source evidence, formatted as 'Phone: ...; Email: ...'. Use 'Not listed' for a contact method absent from evidence. The source link may be a listing portal because the user will investigate the property independently. "
             "sq_ft must contain the published area in square feet, or 'Not listed' when absent. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
             f"availability must be 'Yes - {MOVE_IN_DATE}' or 'No - {MOVE_IN_DATE}' when the source confirms that date; otherwise use 'Not confirmed - {MOVE_IN_DATE}' so the property can still be monitored. "
             "Set action exactly to 'appointment'. Format amenities as one plain string with these exact labels: "
@@ -272,11 +337,6 @@ def ai_enrich_listings(search_results):
                 link = item.get("link")
                 if not link:
                     continue
-                evidence = " ".join(
-                    result.get("content", "")
-                    for result in search_results
-                    if canonical_url(result.get("link")) == canonical_url(item.get("link"))
-                )
                 item["id"] = build_listing_id(link)
                 item["property"] = item.get("property") or "Property name not listed"
                 item["address"] = item.get("address") or "Address not listed"
@@ -288,8 +348,12 @@ def ai_enrich_listings(search_results):
                 item["availability"] = item.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
                 item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
+                item = ai_verify_property_page(item)
+                required_fields = [item.get("property"), item.get("address"), item.get("type"), item.get("price"), item.get("commute"), item.get("contact")]
+                if any((value is None or str(value).lower() in {"not listed", "not confirmed", "not available", "address not listed", "price not listed", "rental type not listed", "property name not listed"}) for value in required_fields):
+                    continue
                 cleaned.append(item)
-            print(f"AI retained {len(cleaned)} rental candidates without quality filtering.")
+            print(f"AI retained {len(cleaned)} rental candidates after property-page verification.")
             return cleaned
     except Exception as exc:
         print(f"Deep property extraction failed: {type(exc).__name__}: {exc!r}")
@@ -308,7 +372,8 @@ def call_live_search_provider(query):
         try:
             results = []
             seen_urls = set()
-            for search_query in SEARCH_QUERIES:
+            queries = SEARCH_QUERIES + GENERAL_MATCH_QUERIES
+            for search_query in queries:
                 response = requests.post(
                     "https://api.tavily.com/search",
                     json={
@@ -323,28 +388,30 @@ def call_live_search_provider(query):
                 )
                 response.raise_for_status()
                 for item in response.json().get("results", []):
-                    if item.get("url") and item["url"] not in seen_urls:
-                        seen_urls.add(item["url"])
+                    url = item.get("url")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
                         results.append(item)
-            print(f"Tavily returned {len(results)} unique live search results across {len(SEARCH_QUERIES)} searches.")
+            print(f"Tavily returned {len(results)} unique live search results across {len(queries)} searches.")
             candidates = []
             for item in results:
                 source_content = item.get("raw_content") or item.get("content", "")
                 content = f"{item.get('title', '')} {source_content}"
-                if not item.get("url"):
+                url = item.get("url")
+                if not url:
                     continue
                 candidates.append({
-                    "id": build_listing_id(item["url"]),
+                    "id": build_listing_id(url),
                     "title": item.get("title", ""),
                     "price": extract_price(content),
                     "content": source_content[:3000],
                     "phone_evidence": extract_phone(content),
                     "drive_evidence": extract_drive_time(content),
-                    "link": item["url"],
+                    "link": url,
                 })
-            print(f"Sending up to 25 source candidates to OpenAI for requirement filtering.")
+            print(f"Sending up to 25 general-match candidates to OpenAI for official property verification.")
             enriched = ai_enrich_listings(candidates[:25])
-            print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
+            print(f"AI accepted {len(enriched)} verified property records from Tavily general-match results.")
             return enriched
         except Exception as exc:
             print(f"Tavily live search failed: {exc}")
