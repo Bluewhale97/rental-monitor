@@ -70,7 +70,7 @@ def update_csv_database(new_listings):
         for row in existing_rows.values():
             writer.writerow(row)
 
-def send_email_notification(subject, html_content, dry_run=True):
+def send_email_notification(subject, html_content, dry_run=False):
     if dry_run:
         print(f"[Dry Run] Email would be sent to: {RECEIVER_EMAILS}")
         return True
@@ -92,7 +92,33 @@ def send_email_notification(subject, html_content, dry_run=True):
         print(f"Failed to send email: {e}")
         return False
 
-def run_scan(listings_input, dry_run=True):
+def fetch_real_listings():
+    """
+    Modular data ingestion point. 
+    Connect your scraper or API client here to dynamically pull real listings.
+    Must return a list of dictionaries matching the schema.
+    """
+    listings = []
+    
+    # Example placeholder structure for future integration:
+    # listings.append({
+    #     "id": "unique_property_id",
+    #     "name": "Community Name",
+    #     "type": "Apartment Community",
+    #     "price": "$2,800",
+    #     "amenities": "In-unit laundry, Disposal",
+    #     "commute": "~10 mins",
+    #     "contact": "(555) 000-0000",
+    #     "link": "https://example.com/property"
+    # })
+    
+    return listings
+
+def run_scan(listings_input, dry_run=False):
+    if not listings_input:
+        print("No listings found during this execution cycle.")
+        return
+
     update_csv_database(listings_input)
     sent_listings = load_sent_listings()
     unsent_listings = [item for item in listings_input if item["id"] not in sent_listings]
@@ -122,7 +148,7 @@ def run_scan(listings_input, dry_run=True):
     <body style="font-family: Arial, sans-serif; background-color: #f7fafc; margin: 0; padding: 20px;">
         <div style="max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
             <h2 style="color: #2d3748; margin-top: 0; border-bottom: 2px solid #edf2f7; padding-bottom: 10px; font-size: 18px;">
-                🎯 08807 Rental Alert: {len(unsent_listings)} New Match(es)
+                🎯 Rental Alert: {len(unsent_listings)} New Match(es)
             </h2>
             <table style="width: 100%; border-collapse: collapse; margin-top: 14px; margin-bottom: 15px;">
                 <thead>
@@ -141,14 +167,14 @@ def run_scan(listings_input, dry_run=True):
                 </tbody>
             </table>
             <p style="color: #a0aec0; font-size: 11px; text-align: center; margin-bottom: 0;">
-                Automated Rental Intelligence System • Target: 08807 (Dec 1 Move-in)
+                Automated Rental Intelligence System
             </p>
         </div>
     </body>
     </html>
     """
 
-    subject = f"🎯 [08807 Rental Radar] {len(unsent_listings)} New Property Match(es) Found!"
+    subject = f"🎯 [Rental Radar] {len(unsent_listings)} New Property Match(es) Found!"
     
     if send_email_notification(subject, html_content, dry_run=dry_run):
         for item in unsent_listings:
@@ -156,17 +182,5 @@ def run_scan(listings_input, dry_run=True):
         save_sent_listings(sent_listings)
 
 if __name__ == "__main__":
-    test_listings = [
-        {
-            "id": "village_at_bridgewater_2b",
-            "name": "Village at Bridgewater (101 Griggs Dr)",
-            "type": "Apartment Community",
-            "price": "$2,650",
-            "amenities": "In-unit laundry, Disposal",
-            "commute": "~12 mins to Legend Biotech",
-            "contact": "(908) 555-0199",
-            "link": "https://www.zillow.com/bldg/101-griggs-dr-bridgewater-nj-08807-bXrtw5/"
-        }
-    ]
-    
-    run_scan(test_listings, dry_run=False)
+    live_listings = fetch_real_listings()
+    run_scan(live_listings, dry_run=False)
