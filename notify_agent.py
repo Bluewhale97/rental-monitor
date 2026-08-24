@@ -40,6 +40,10 @@ SEARCH_QUERIES = [
     f"2 bedroom professionally managed apartments near {SEARCH_AREAS} under ${MAX_PRICE} leasing office",
     f"2 bedroom managed townhomes for rent near {SEARCH_AREAS} under ${MAX_PRICE} property website",
     f"new 2 bedroom rental communities near {SEARCH_AREAS} official leasing availability",
+    f"2 bedroom apartments for rent Bridgewater Somerville Bound Brook South Bound Brook NJ under ${MAX_PRICE}",
+    f"2 bedroom townhomes for rent Branchburg Hillsborough Franklin Township NJ under ${MAX_PRICE} leasing office",
+    f"2 bedroom apartment community website Somerset County NJ in-unit laundry leasing office",
+    f"2 bedroom rental community October 31 2026 Somerset County NJ official website",
 ]
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -121,6 +125,18 @@ def extract_drive_time(text):
 def price_is_within_budget(price):
     amounts = [int(value.replace(",", "")) for value in re.findall(r"\$\s?([0-9][0-9,]*)", str(price))]
     return bool(amounts) and max(amounts) <= int(MAX_PRICE)
+
+
+def price_is_supported(price, evidence):
+    reported_amounts = {
+        value.replace(",", "")
+        for value in re.findall(r"\$\s?([0-9][0-9,]*)", str(price))
+    }
+    evidence_amounts = {
+        value.replace(",", "")
+        for value in re.findall(r"\$\s?([0-9][0-9,]*)", str(evidence))
+    }
+    return bool(reported_amounts) and reported_amounts.issubset(evidence_amounts)
 
 
 def commute_is_within_limit(commute):
@@ -286,6 +302,12 @@ def ai_enrich_listings(search_results):
                     for source in result.get("official_sources", [])
                     if source.get("url") == item.get("link")
                 )
+                candidate_evidence = " ".join(
+                    result.get("content", "")
+                    for result in search_results
+                    if any(source.get("url") == item.get("link") for source in result.get("official_sources", []))
+                )
+                evidence = f"{candidate_evidence} {official_evidence}"
                 if not area_match or area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
                     continue
                 if not re.match(rf"^(Yes|No) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
@@ -293,6 +315,8 @@ def ai_enrich_listings(search_results):
                 if not re.search(r"\b2b\d+(?:\.\d+)?b\b", str(item["type"]).lower()):
                     continue
                 if not price_is_within_budget(item["price"]):
+                    continue
+                if not price_is_supported(item["price"], evidence):
                     continue
                 if not commute_is_within_limit(item["commute"]):
                     continue
@@ -303,6 +327,8 @@ def ai_enrich_listings(search_results):
                     or not extract_phone(contact)
                     or not extract_email(contact)
                 ):
+                    continue
+                if extract_phone(contact) not in evidence or extract_email(contact) not in evidence:
                     continue
                 item["id"] = build_listing_id(item["link"])
                 item["action"] = "appointment"
@@ -354,20 +380,19 @@ def call_live_search_provider(query):
             for item in results:
                 source_content = item.get("raw_content") or item.get("content", "")
                 content = f"{item.get('title', '')} {source_content}"
-                price = extract_price(content)
-                if not item.get("url") or not price:
+                if not item.get("url"):
                     continue
                 candidates.append({
                     "id": build_listing_id(item["url"]),
                     "title": item.get("title", ""),
-                    "price": price,
+                    "price": extract_price(content),
                     "content": source_content[:5000],
                     "phone_evidence": extract_phone(content),
                     "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
                 })
             official_candidates = []
-            for candidate in candidates[:15]:
+            for candidate in candidates[:25]:
                 official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
                 if official_sources:
                     candidate["official_sources"] = official_sources
