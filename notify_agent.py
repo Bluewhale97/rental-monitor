@@ -28,9 +28,8 @@ MIN_BEDS = os.getenv("MIN_BEDS", "2")
 MAX_PRICE = os.getenv("MAX_PRICE", "3000")
 SEARCH_QUERY = os.getenv(
     "SEARCH_QUERY",
-    f"{MIN_BEDS}-bedroom professionally managed apartments or townhouses near {SEARCH_LOCATION} "
-    f"under ${MAX_PRICE}, 2 bathrooms preferred, in-unit laundry, garbage disposal, "
-    "good reviews, leasing office, December 1 move-in",
+    f"{MIN_BEDS} bedroom apartments or townhomes for rent near {SEARCH_LOCATION} "
+    f"under ${MAX_PRICE} with leasing office and in-unit laundry",
 )
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -138,6 +137,7 @@ def call_live_search_provider(query):
             )
             response.raise_for_status()
             results = response.json().get("results", [])
+            print(f"Tavily returned {len(results)} live search results.")
             return [
                 {
                     "id": build_listing_id(item.get("url", "")) or item.get("title", "").lower().replace(" ", "_"),
