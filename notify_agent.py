@@ -331,6 +331,8 @@ def update_csv_database(new_listings):
                 if "name" in row and "property" not in row:
                     row["property"] = row.pop("name")
                 row.setdefault("address", "")
+                if not row.get("property") or not row.get("address"):
+                    continue
                 existing_rows[row["id"]] = row
 
     today = datetime.now().strftime("%Y-%m-%d")
