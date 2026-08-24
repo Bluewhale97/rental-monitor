@@ -222,10 +222,9 @@ def ai_enrich_listings(search_results):
 
     try:
         prompt = (
-            "You are a rental research assistant. Review every supplied live-search result and return plausible professionally managed "
-            f"2-bedroom apartment or townhouse properties within a {COMMUTE_LIMIT}-minute drive of Legend Biotech, 08807, under or near ${MAX_PRICE}. "
-            "Return plausible candidates even when optional details are missing; use 'Not listed' or 'Not confirmed' rather than returning an empty array. "
-            "Exclude only private landlords, room rentals, obviously unrelated pages, and results that clearly are not rental properties. "
+            "You are a rental research assistant. Review every supplied live-search result and extract every plausible rental property candidate. "
+            "Do not reject candidates because price, commute, area, availability, amenities, or contact information is missing. "
+            "Use 'Not listed' or 'Not confirmed' for missing details. Exclude only obvious non-rental pages. "
             "Do not infer or invent facts. Use only evidence in each result. "
             "In-unit laundry is mandatory and must be confirmed Yes; garbage disposal is preferred but optional, so report Yes, No, or Not listed. "
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
@@ -266,59 +265,31 @@ def ai_enrich_listings(search_results):
         parsed = json.loads(content)
         if isinstance(parsed, list):
             print(f"OpenAI parsed {len(parsed)} candidate records before validation.")
-            allowed_links = {canonical_url(item.get("link")): item.get("link") for item in search_results}
             cleaned = []
-            rejection_counts = {}
             for item in parsed:
-                if not isinstance(item, dict) or canonical_url(item.get("link")) not in allowed_links:
-                    rejection_counts["invalid or non-official link"] = rejection_counts.get("invalid or non-official link", 0) + 1
+                if not isinstance(item, dict):
                     continue
-                if not all(item.get(field) for field in ("property", "address", "type", "price", "commute", "contact", "availability")):
-                    rejection_counts["missing required field"] = rejection_counts.get("missing required field", 0) + 1
+                link = item.get("link")
+                if not link:
                     continue
-                area_match = re.search(r"[0-9][0-9,]*", str(item.get("sq_ft", "")))
                 evidence = " ".join(
                     result.get("content", "")
                     for result in search_results
                     if canonical_url(result.get("link")) == canonical_url(item.get("link"))
                 )
-                if area_match and area_match.group(0).replace(",", "") not in evidence.replace(",", ""):
-                    rejection_counts["square footage not supported"] = rejection_counts.get("square footage not supported", 0) + 1
-                    continue
-                if not re.match(rf"^(Yes|No|Not confirmed) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
-                    rejection_counts["move-in date not supported"] = rejection_counts.get("move-in date not supported", 0) + 1
-                    continue
-                if not re.search(r"\b2b\d+(?:\.\d+)?b\b", str(item["type"]).lower()):
-                    rejection_counts["bedroom or bathroom type invalid"] = rejection_counts.get("bedroom or bathroom type invalid", 0) + 1
-                    continue
-                if not price_is_within_budget(item["price"]):
-                    rejection_counts["over budget"] = rejection_counts.get("over budget", 0) + 1
-                    continue
-                if not price_is_supported(item["price"], evidence):
-                    rejection_counts["price not supported"] = rejection_counts.get("price not supported", 0) + 1
-                    continue
-                if not commute_is_within_limit(item["commute"]):
-                    rejection_counts["commute invalid or over limit"] = rejection_counts.get("commute invalid or over limit", 0) + 1
-                    continue
-                contact = normalize_contact(item.get("contact"))
-                if "Phone:" not in contact and "Email:" not in contact:
-                    rejection_counts["phone or email missing"] = rejection_counts.get("phone or email missing", 0) + 1
-                    continue
-                phone = extract_phone(contact)
-                email = extract_email(contact)
-                if (phone and phone not in evidence) or (email and email not in evidence):
-                    rejection_counts["phone or email not supported"] = rejection_counts.get("phone or email not supported", 0) + 1
-                    continue
-                item["id"] = build_listing_id(item["link"])
-                item["link"] = allowed_links[canonical_url(item["link"])]
+                item["id"] = build_listing_id(link)
+                item["property"] = item.get("property") or "Property name not listed"
+                item["address"] = item.get("address") or "Address not listed"
+                item["sq_ft"] = item.get("sq_ft") or "Not listed"
+                item["type"] = item.get("type") or "Rental type not listed"
+                item["price"] = item.get("price") or "Price not listed"
+                item["commute"] = item.get("commute") or "Not listed"
+                item["contact"] = normalize_contact(item.get("contact"))
+                item["availability"] = item.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
                 item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
-                item["contact"] = contact
-                if not has_required_amenities(item["amenities"]):
-                    rejection_counts["in-unit laundry not confirmed"] = rejection_counts.get("in-unit laundry not confirmed", 0) + 1
-                    continue
                 cleaned.append(item)
-            print(f"AI accepted {len(cleaned)} verified property records; rejection details: {rejection_counts or 'none'}")
+            print(f"AI retained {len(cleaned)} rental candidates without quality filtering.")
             return cleaned
     except Exception as exc:
         print(f"Deep property extraction failed: {type(exc).__name__}: {exc!r}")
