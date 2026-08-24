@@ -38,6 +38,7 @@ jobs:
           MAX_PRICE: "3000"
         run: |
           test -n "$TAVILY_API_KEY" || (echo "Missing GitHub secret: TAVILY_API_KEY" && exit 1)
+          test -n "$OPENAI_API_KEY" || (echo "Missing GitHub secret: OPENAI_API_KEY for deep property extraction" && exit 1)
           test -n "$RENT_SENDER_EMAIL" || (echo "Missing GitHub secret: RENT_SENDER_EMAIL" && exit 1)
           test -n "$RENT_SENDER_PASSWORD" || (echo "Missing GitHub secret: RENT_SENDER_PASSWORD" && exit 1)
           test -n "$RENT_RECEIVER_EMAILS" || (echo "Missing GitHub secret: RENT_RECEIVER_EMAILS" && exit 1)

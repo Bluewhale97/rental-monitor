@@ -28,8 +28,9 @@ MIN_BEDS = os.getenv("MIN_BEDS", "2")
 MAX_PRICE = os.getenv("MAX_PRICE", "3000")
 SEARCH_QUERY = os.getenv(
     "SEARCH_QUERY",
-    f"{MIN_BEDS} bedroom apartments or townhomes for rent near {SEARCH_LOCATION} "
-    f"under ${MAX_PRICE} with leasing office and in-unit laundry",
+    f"current professionally managed 2 bedroom apartment or townhouse communities near {SEARCH_LOCATION} "
+    f"under ${MAX_PRICE} for December 1 move-in, official property website, leasing office phone, "
+    "full street address, in-unit laundry, garbage disposal, and driving time to Legend Biotech 08807",
 )
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -98,21 +99,34 @@ def extract_drive_time(text):
     return f"{match.group(1)} min drive to 08807"
 
 
-def ai_rank_listings(listings):
-    if not AI_LIVE_SEARCH_ENABLED or not OPENAI_API_KEY or not listings:
-        return listings
+def ai_enrich_listings(search_results):
+    if not OPENAI_API_KEY or not search_results:
+        print("Deep property extraction requires the OPENAI_API_KEY secret.")
+        return []
+
+    if not AI_LIVE_SEARCH_ENABLED:
+        return []
 
     try:
         prompt = (
-            "You are a rental search assistant. Rank these apartments for a user seeking "
-            f"{MIN_BEDS} bedroom apartments under ${MAX_PRICE} in {SEARCH_LOCATION}. "
-            "Return JSON only with same object structure and add a 'score' field to each item. "
-            "Prioritize affordability, location fit, and likely availability.\n\n"
-            + json.dumps(listings[:12], indent=2)
+            "You are a meticulous rental research assistant. Extract only real, current, professionally managed "
+            f"2-bedroom apartments or townhouses within a 25-minute drive of Legend Biotech, 08807, under ${MAX_PRICE}. "
+            "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
+            "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
+            "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
+            "Return a JSON array with exactly these fields: id, property, address, type, price, amenities, commute, contact, link. "
+            "property must be the actual community/property name, link must exactly match one supplied URL, commute must say "
+            "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
+            "office phone or official leasing URL. Include in amenities whether laundry, disposal, gym, pool, fees, or move-in "
+            "specials are confirmed, unknown, or not mentioned.\n\nSEARCH RESULTS:\n"
+            + json.dumps(search_results[:20], indent=2)
         )
         payload = {
             "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": "Return valid JSON only. Never use markdown fences."},
+                {"role": "user", "content": prompt},
+            ],
             "temperature": 0.2,
         }
         response = requests.post(
@@ -128,13 +142,19 @@ def ai_rank_listings(listings):
         content = response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         if isinstance(parsed, list):
-            for idx, item in enumerate(parsed):
-                if isinstance(item, dict):
-                    item.setdefault("score", 100 - idx)
-            return parsed
+            allowed_links = {item.get("link") for item in search_results}
+            cleaned = []
+            for item in parsed:
+                if not isinstance(item, dict) or item.get("link") not in allowed_links:
+                    continue
+                if not all(item.get(field) for field in ("property", "address", "price", "commute", "contact")):
+                    continue
+                item["id"] = build_listing_id(item["link"])
+                cleaned.append(item)
+            return cleaned
     except Exception as exc:
-        print(f"AI ranking skipped: {exc}")
-    return listings
+        print(f"Deep property extraction failed: {type(exc).__name__}: {exc!r}")
+    return []
 
 
 def call_live_search_provider(query):
@@ -152,7 +172,7 @@ def call_live_search_provider(query):
                 json={
                     "api_key": TAVILY_API_KEY,
                     "query": query + " Include current rent, leasing office phone, and driving time to 08807.",
-                    "max_results": 8,
+                    "max_results": 20,
                     "search_depth": "advanced",
                     "include_answer": True,
                 },
@@ -161,23 +181,24 @@ def call_live_search_provider(query):
             response.raise_for_status()
             results = response.json().get("results", [])
             print(f"Tavily returned {len(results)} live search results.")
-            listings = []
+            candidates = []
             for item in results:
                 content = f"{item.get('title', '')} {item.get('content', '')}"
                 price = extract_price(content)
                 if not item.get("url") or not price:
                     continue
-                listings.append({
+                candidates.append({
                     "id": build_listing_id(item["url"]),
-                    "name": item.get("title", "Apartment Listing"),
-                    "type": f"{MIN_BEDS} Bed / 2 Bath",
+                    "title": item.get("title", ""),
                     "price": price,
-                    "amenities": item.get("content", "Live search result")[:500],
-                    "commute": extract_drive_time(content) or "Within 25 min target; verify route",
-                    "contact": extract_phone(content) or "Leasing office: see listing",
+                    "content": item.get("content", "")[:1500],
+                    "phone_evidence": extract_phone(content),
+                    "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
                 })
-            return listings
+            enriched = ai_enrich_listings(candidates)
+            print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
+            return enriched
         except Exception as exc:
             print(f"Tavily live search failed: {exc}")
 
@@ -266,7 +287,7 @@ def fetch_live_listings_from_sources(urls=None):
         print("No structured live listing data was extracted from the configured search endpoints.")
         return []
 
-    ranked = ai_rank_listings(listings)
+    ranked = listings
     with open(LIVE_LISTINGS_FILE, "w", encoding="utf-8") as output_file:
         json.dump(ranked, output_file, indent=2)
     print(f"Saved {len(ranked)} live listings to {LIVE_LISTINGS_FILE}.")
@@ -285,10 +306,9 @@ def load_live_listings():
 
     provider_results = call_live_search_provider(SEARCH_QUERY)
     if provider_results:
-        ranked = ai_rank_listings(provider_results)
         with open(LIVE_LISTINGS_FILE, "w", encoding="utf-8") as output_file:
-            json.dump(ranked, output_file, indent=2)
-        return ranked
+            json.dump(provider_results, output_file, indent=2)
+        return provider_results
 
     if SEARCH_PROVIDER in {"tavily", "openai", "ai"}:
         print(f"No results from the configured {SEARCH_PROVIDER} live-search provider.")
@@ -300,7 +320,7 @@ def load_live_listings():
 def update_csv_database(new_listings):
     file_exists = os.path.exists(CSV_DATABASE)
     fieldnames = [
-        "id", "apt_name", "type", "price", "amenities",
+        "id", "property", "address", "type", "price", "amenities",
         "commute", "contact", "link", "first_seen_date",
     ]
     existing_rows = {}
@@ -308,8 +328,9 @@ def update_csv_database(new_listings):
         with open(CSV_DATABASE, mode="r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if "name" in row and "apt_name" not in row:
-                    row["apt_name"] = row.pop("name")
+                if "name" in row and "property" not in row:
+                    row["property"] = row.pop("name")
+                row.setdefault("address", "")
                 existing_rows[row["id"]] = row
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -317,7 +338,8 @@ def update_csv_database(new_listings):
         item_id = item["id"]
         if item_id in existing_rows:
             existing_rows[item_id].update({
-                "apt_name": item.get("name", existing_rows[item_id].get("apt_name", "")),
+                "property": item.get("property", item.get("name", existing_rows[item_id].get("property", ""))),
+                "address": item.get("address", existing_rows[item_id].get("address", "")),
                 "type": item.get("type", existing_rows[item_id].get("type", "")),
                 "price": item.get("price", existing_rows[item_id]["price"]),
                 "amenities": item.get("amenities", existing_rows[item_id].get("amenities", "")),
@@ -328,7 +350,8 @@ def update_csv_database(new_listings):
         else:
             existing_rows[item_id] = {
                 "id": item_id,
-                "apt_name": item.get("name"),
+                "property": item.get("property", item.get("name")),
+                "address": item.get("address"),
                 "type": item.get("type"),
                 "price": item.get("price"),
                 "amenities": item.get("amenities", "In-unit laundry, Disposal"),
@@ -385,7 +408,8 @@ def run_scan(dry_run=False):
     for item in unsent_listings:
         table_rows += f"""
         <tr style="border-bottom: 1px solid #eaeaea;">
-            <td style="padding: 10px; font-weight: bold; color: #333; font-size: 13px;">{item.get('name')}</td>
+            <td style="padding: 10px; font-weight: bold; color: #333; font-size: 13px;">{item.get('property', item.get('name'))}</td>
+            <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('address')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('type')}</td>
             <td style="padding: 10px; color: #2c7a7b; font-weight: bold; font-size: 13px;">{item.get('price')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('amenities', 'In-unit laundry, Disposal')}</td>
@@ -407,7 +431,8 @@ def run_scan(dry_run=False):
             <table style="width: 100%; border-collapse: collapse; margin-top: 14px; margin-bottom: 15px;">
                 <thead>
                     <tr style="background-color: #edf2f7; text-align: left;">
-                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Apt name</th>
+                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Property</th>
+                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Address</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Type</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Price</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Amenities</th>
