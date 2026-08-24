@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.getenv("RENT_SENDER_EMAIL", "stanley.z4r@gmail.com")
-SENDER_PASSWORD = os.getenv("RENT_SENDER_PASSWORD", "")
+SENDER_PASSWORD = os.getenv("RENT_SENDER_PASSWORD", "").replace(" ", "")
 RECEIVER_EMAILS = [
     email.strip()
     for email in os.getenv("RENT_RECEIVER_EMAILS", "stanley.z4r@gmail.com").split(",")
@@ -326,14 +326,14 @@ def send_email_notification(subject, html_content, dry_run=False):
         msg["To"] = ", ".join(RECEIVER_EMAILS)
         msg.attach(MIMEText(html_content, "html"))
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, RECEIVER_EMAILS, msg.as_string())
         print("Email sent successfully!")
         return True
     except Exception as exc:
-        print(f"Failed to send email: {exc}")
+        print(f"Failed to send email ({type(exc).__name__}): {exc!r}")
         return False
 
 
