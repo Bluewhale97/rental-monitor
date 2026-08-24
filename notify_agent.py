@@ -208,6 +208,30 @@ def is_portal_url(url):
 def find_official_property_site(property_hint, address):
     if not TAVILY_API_KEY:
         return []
+
+
+def find_commute_evidence(address):
+    if not TAVILY_API_KEY or not address:
+        return ""
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": f'"{address}" to Legend Biotech 08807 driving time minutes',
+                "max_results": 3,
+                "search_depth": "advanced",
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        return " ".join(
+            f"{item.get('title', '')} {item.get('content', '')}"
+            for item in response.json().get("results", [])
+        )[:3000]
+    except Exception as exc:
+        print(f"Commute lookup failed: {type(exc).__name__}: {exc!r}")
+        return ""
     try:
         response = requests.post(
             "https://api.tavily.com/search",
@@ -309,7 +333,7 @@ def ai_enrich_listings(search_results):
                     if source.get("url") == item.get("link")
                 )
                 candidate_evidence = " ".join(
-                    result.get("content", "")
+                    f"{result.get('content', '')} {result.get('commute_evidence', '')}"
                     for result in search_results
                     if any(source.get("url") == item.get("link") for source in result.get("official_sources", []))
                 )
@@ -411,6 +435,9 @@ def call_live_search_provider(query):
                 official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
                 if official_sources:
                     candidate["official_sources"] = official_sources
+                    candidate["commute_evidence"] = find_commute_evidence(
+                        f"{candidate['title']} {candidate['content'][:500]}"
+                    )
                     official_candidates.append(candidate)
                     print(f"Official-site verification found {len(official_candidates)} candidate matches.")
             enriched = ai_enrich_listings(official_candidates)
