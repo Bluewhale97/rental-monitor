@@ -33,6 +33,12 @@ SEARCH_QUERY = os.getenv(
     f"current 2 bedroom apartment or townhouse rentals near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} "
     "official property leasing office",
 )
+SEARCH_QUERIES = [
+    SEARCH_QUERY,
+    f"2 bedroom professionally managed apartments near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} leasing office",
+    f"2 bedroom managed townhomes for rent near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} property website",
+    f"new 2 bedroom rental communities near {SEARCH_LOCATION} 08807 official leasing availability",
+]
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -105,6 +111,23 @@ def extract_drive_time(text):
     return f"{match.group(1)} min drive to 08807"
 
 
+def price_is_within_budget(price):
+    amounts = [int(value.replace(",", "")) for value in re.findall(r"\$\s?([0-9][0-9,]*)", str(price))]
+    return bool(amounts) and max(amounts) <= int(MAX_PRICE)
+
+
+def commute_is_within_limit(commute):
+    match = re.search(r"(\d{1,2})(?:\s?[-\u2013]\s?(\d{1,2}))?\s+min", str(commute), re.IGNORECASE)
+    if not match:
+        return False
+    return int(match.group(2) or match.group(1)) <= 25
+
+
+def has_required_amenities(amenities):
+    text = str(amenities).lower()
+    return "in-unit laundry: yes" in text and "garbage disposal: yes" in text
+
+
 def format_amenities(value):
     labels = [
         "In-unit laundry",
@@ -170,6 +193,7 @@ def find_official_property_site(property_hint, address):
                 "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability',
                 "max_results": 5,
                 "search_depth": "advanced",
+                "include_raw_content": True,
             },
             timeout=45,
         )
@@ -178,7 +202,7 @@ def find_official_property_site(property_hint, address):
             {
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
-                "content": item.get("content", "")[:1500],
+                "content": (item.get("raw_content") or item.get("content", ""))[:5000],
             }
             for item in response.json().get("results", [])
             if item.get("url") and not is_portal_url(item["url"])
@@ -203,6 +227,7 @@ def ai_enrich_listings(search_results):
             "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
             "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
+            "In-unit laundry and garbage disposal are mandatory and must be confirmed Yes; exclude records where either is not confirmed. "
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, unit, type, price, amenities, commute, contact, availability, action, link. "
             "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
@@ -249,6 +274,12 @@ def ai_enrich_listings(search_results):
                     continue
                 if not re.match(rf"^(Yes|No) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
                     continue
+                if not re.search(r"\b2b\d+(?:\.\d+)?b\b", str(item["type"]).lower()):
+                    continue
+                if not price_is_within_budget(item["price"]):
+                    continue
+                if not commute_is_within_limit(item["commute"]):
+                    continue
                 contact = normalize_contact(item.get("contact"))
                 if (
                     "Phone:" not in contact
@@ -262,6 +293,8 @@ def ai_enrich_listings(search_results):
                 item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
                 item["contact"] = contact
+                if not has_required_amenities(item["amenities"]):
+                    continue
                 if is_portal_url(item["link"]):
                     continue
                 cleaned.append(item)
@@ -281,23 +314,31 @@ def call_live_search_provider(query):
             print("Tavily live search is not configured. Add the TAVILY_API_KEY environment variable or GitHub secret.")
             return []
         try:
-            response = requests.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": TAVILY_API_KEY,
-                    "query": query + " Include current rent, full property address, leasing office phone, and driving time to 08807.",
-                    "max_results": 20,
-                    "search_depth": "advanced",
-                    "include_answer": True,
-                },
-                timeout=45,
-            )
-            response.raise_for_status()
-            results = response.json().get("results", [])
-            print(f"Tavily returned {len(results)} live search results.")
+            results = []
+            seen_urls = set()
+            for search_query in SEARCH_QUERIES:
+                response = requests.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": TAVILY_API_KEY,
+                        "query": search_query + " Include current rent, full property address, leasing office phone, and driving time to 08807.",
+                        "max_results": 20,
+                        "search_depth": "advanced",
+                        "include_answer": True,
+                        "include_raw_content": True,
+                    },
+                    timeout=45,
+                )
+                response.raise_for_status()
+                for item in response.json().get("results", []):
+                    if item.get("url") and item["url"] not in seen_urls:
+                        seen_urls.add(item["url"])
+                        results.append(item)
+            print(f"Tavily returned {len(results)} unique live search results across {len(SEARCH_QUERIES)} searches.")
             candidates = []
             for item in results:
-                content = f"{item.get('title', '')} {item.get('content', '')}"
+                source_content = item.get("raw_content") or item.get("content", "")
+                content = f"{item.get('title', '')} {source_content}"
                 price = extract_price(content)
                 if not item.get("url") or not price:
                     continue
@@ -305,13 +346,13 @@ def call_live_search_provider(query):
                     "id": build_listing_id(item["url"]),
                     "title": item.get("title", ""),
                     "price": price,
-                    "content": item.get("content", "")[:1500],
+                    "content": source_content[:5000],
                     "phone_evidence": extract_phone(content),
                     "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
                 })
             official_candidates = []
-            for candidate in candidates[:10]:
+            for candidate in candidates[:15]:
                 official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
                 if official_sources:
                     candidate["official_sources"] = official_sources
