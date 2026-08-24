@@ -6,6 +6,7 @@ import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -132,6 +133,55 @@ def normalize_contact(value):
     return str(value or "Not listed")
 
 
+PORTAL_DOMAINS = {
+    "apartments.com",
+    "zillow.com",
+    "realtor.com",
+    "redfin.com",
+    "trulia.com",
+    "rent.com",
+    "forrent.com",
+    "homes.com",
+    "apartmenthomeliving.com",
+    "roomster.com",
+    "sulekha.com",
+}
+
+
+def is_portal_url(url):
+    hostname = urlparse(url).netloc.lower().removeprefix("www.")
+    return any(hostname == domain or hostname.endswith(f".{domain}") for domain in PORTAL_DOMAINS)
+
+
+def find_official_property_site(property_hint, address):
+    if not TAVILY_API_KEY:
+        return []
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": f'"{property_hint}" "{address}" official website leasing office phone',
+                "max_results": 5,
+                "search_depth": "advanced",
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "content": item.get("content", "")[:1500],
+            }
+            for item in response.json().get("results", [])
+            if item.get("url") and not is_portal_url(item["url"])
+        ]
+    except Exception as exc:
+        print(f"Official property-site lookup failed: {type(exc).__name__}: {exc!r}")
+        return []
+
+
 def ai_enrich_listings(search_results):
     if not OPENAI_API_KEY or not search_results:
         print("Deep property extraction requires the OPENAI_API_KEY secret.")
@@ -148,9 +198,9 @@ def ai_enrich_listings(search_results):
             "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
             "Return a JSON array with exactly these fields: id, property, address, type, price, amenities, commute, contact, link. "
-            "property must be the actual community/property name, link must exactly match one supplied URL, commute must say "
+            "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
-            "office phone or official leasing URL. Format amenities as one plain string with these exact labels: "
+            "office phone or official leasing URL, and the link must not be a listing portal. Format amenities as one plain string with these exact labels: "
             "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
             "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
             "Use Not listed when the source does not say; never guess.\n\nSEARCH RESULTS:\n"
@@ -177,7 +227,11 @@ def ai_enrich_listings(search_results):
         content = response.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         if isinstance(parsed, list):
-            allowed_links = {item.get("link") for item in search_results}
+            allowed_links = {
+                source.get("url")
+                for item in search_results
+                for source in item.get("official_sources", [])
+            }
             cleaned = []
             for item in parsed:
                 if not isinstance(item, dict) or item.get("link") not in allowed_links:
@@ -187,6 +241,8 @@ def ai_enrich_listings(search_results):
                 item["id"] = build_listing_id(item["link"])
                 item["amenities"] = format_amenities(item.get("amenities"))
                 item["contact"] = normalize_contact(item.get("contact"))
+                if is_portal_url(item["link"]):
+                    continue
                 cleaned.append(item)
             return cleaned
     except Exception as exc:
@@ -233,7 +289,13 @@ def call_live_search_provider(query):
                     "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
                 })
-            enriched = ai_enrich_listings(candidates)
+            official_candidates = []
+            for candidate in candidates[:10]:
+                official_sources = find_official_property_site(candidate["title"], SEARCH_LOCATION)
+                if official_sources:
+                    candidate["official_sources"] = official_sources
+                    official_candidates.append(candidate)
+            enriched = ai_enrich_listings(official_candidates)
             print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
             return enriched
         except Exception as exc:
