@@ -28,9 +28,8 @@ MIN_BEDS = os.getenv("MIN_BEDS", "2")
 MAX_PRICE = os.getenv("MAX_PRICE", "3000")
 SEARCH_QUERY = os.getenv(
     "SEARCH_QUERY",
-    f"current professionally managed 2 bedroom apartment or townhouse communities near {SEARCH_LOCATION} "
-    f"under ${MAX_PRICE} for December 1 move-in, official property website, leasing office phone, "
-    "full street address, in-unit laundry, garbage disposal, and driving time to Legend Biotech 08807",
+    f"current 2 bedroom apartment or townhouse rentals near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} "
+    "official property leasing office",
 )
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -117,8 +116,10 @@ def ai_enrich_listings(search_results):
             "Return a JSON array with exactly these fields: id, property, address, type, price, amenities, commute, contact, link. "
             "property must be the actual community/property name, link must exactly match one supplied URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
-            "office phone or official leasing URL. Include in amenities whether laundry, disposal, gym, pool, fees, or move-in "
-            "specials are confirmed, unknown, or not mentioned.\n\nSEARCH RESULTS:\n"
+            "office phone or official leasing URL. Format amenities as one plain string with these exact labels: "
+            "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
+            "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
+            "Use Not listed when the source does not say; never guess.\n\nSEARCH RESULTS:\n"
             + json.dumps(search_results[:20], indent=2)
         )
         payload = {
@@ -171,7 +172,7 @@ def call_live_search_provider(query):
                 "https://api.tavily.com/search",
                 json={
                     "api_key": TAVILY_API_KEY,
-                    "query": query + " Include current rent, leasing office phone, and driving time to 08807.",
+                    "query": query + " Include current rent, full property address, leasing office phone, and driving time to 08807.",
                     "max_results": 20,
                     "search_depth": "advanced",
                     "include_answer": True,
