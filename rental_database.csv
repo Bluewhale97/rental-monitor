@@ -1,0 +1,4 @@
+id,name,type,price,amenities,commute,contact,link,first_seen_date
+village_at_bridgewater_2b,Village at Bridgewater (101 Griggs Dr),Apartment Community,"$2,650","In-unit laundry, Disposal",~12 mins to Legend Biotech,(908) 555-0199,https://www.zillow.com/bldg/101-griggs-dr-bridgewater-nj-08807-bXrtw5/,2026-08-24
+test_2026_08_24_001,Test Listing 001,Apartment Community,",450",,~15 mins,,https://example.com/test-listing-001,2026-08-24
+test_2026_08_24_002,Fresh Test Listing 002,Apartment Community,",700","In-unit laundry, Disposal",~18 mins to Legend Biotech,(908) 555-0111,https://example.com/fresh-002,2026-08-24
