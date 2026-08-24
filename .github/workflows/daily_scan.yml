@@ -34,8 +34,10 @@ jobs:
           SEARCH_PROVIDER: "tavily"
           AI_LIVE_SEARCH_ENABLED: "true"
           SEARCH_LOCATION: "Bridgewater, NJ"
+          SEARCH_AREAS: "Bridgewater, NJ; Somerset County, NJ"
           MIN_BEDS: "2"
           MAX_PRICE: "3000"
+          COMMUTE_LIMIT: "30"
           MOVE_IN_DATE: "2026-12-01"
         run: |
           test -n "$TAVILY_API_KEY" || (echo "Missing GitHub secret: TAVILY_API_KEY" && exit 1)

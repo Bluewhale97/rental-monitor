@@ -25,8 +25,10 @@ HISTORY_FILE = "sent_listings.json"
 CSV_DATABASE = "rental_database.csv"
 LIVE_LISTINGS_FILE = os.getenv("LIVE_LISTINGS_FILE", "live_listings.json")
 SEARCH_LOCATION = os.getenv("SEARCH_LOCATION", "Bridgewater, NJ")
+SEARCH_AREAS = os.getenv("SEARCH_AREAS", f"{SEARCH_LOCATION}; Somerset County, NJ")
 MIN_BEDS = os.getenv("MIN_BEDS", "2")
 MAX_PRICE = os.getenv("MAX_PRICE", "3000")
+COMMUTE_LIMIT = int(os.getenv("COMMUTE_LIMIT", "30"))
 MOVE_IN_DATE = os.getenv("MOVE_IN_DATE", "2026-12-01")
 SEARCH_QUERY = os.getenv(
     "SEARCH_QUERY",
@@ -35,9 +37,9 @@ SEARCH_QUERY = os.getenv(
 )
 SEARCH_QUERIES = [
     SEARCH_QUERY,
-    f"2 bedroom professionally managed apartments near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} leasing office",
-    f"2 bedroom managed townhomes for rent near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} property website",
-    f"new 2 bedroom rental communities near {SEARCH_LOCATION} 08807 official leasing availability",
+    f"2 bedroom professionally managed apartments near {SEARCH_AREAS} under ${MAX_PRICE} leasing office",
+    f"2 bedroom managed townhomes for rent near {SEARCH_AREAS} under ${MAX_PRICE} property website",
+    f"new 2 bedroom rental communities near {SEARCH_AREAS} official leasing availability",
 ]
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -120,7 +122,7 @@ def commute_is_within_limit(commute):
     match = re.search(r"(\d{1,2})(?:\s?[-\u2013]\s?(\d{1,2}))?\s+min", str(commute), re.IGNORECASE)
     if not match:
         return False
-    return int(match.group(2) or match.group(1)) <= 25
+    return int(match.group(2) or match.group(1)) <= COMMUTE_LIMIT
 
 
 def has_required_amenities(amenities):
@@ -223,7 +225,7 @@ def ai_enrich_listings(search_results):
     try:
         prompt = (
             "You are a meticulous rental research assistant. Extract only real, current, professionally managed "
-            f"2-bedroom apartments or townhouses within a 25-minute drive of Legend Biotech, 08807, under ${MAX_PRICE}. "
+            f"2-bedroom apartments or townhouses within a {COMMUTE_LIMIT}-minute drive of Legend Biotech, 08807, under ${MAX_PRICE}. "
             "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
             "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
