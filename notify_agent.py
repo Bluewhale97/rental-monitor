@@ -225,7 +225,7 @@ def find_official_property_site(property_hint, address):
             {
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
-                "content": (item.get("raw_content") or item.get("content", ""))[:5000],
+                "content": (item.get("raw_content") or item.get("content", ""))[:3000],
             }
             for item in response.json().get("results", [])
             if item.get("url") and not is_portal_url(item["url"])
@@ -261,7 +261,7 @@ def ai_enrich_listings(search_results):
             "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
             "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
             "Use Not listed when the source does not say; never guess.\n\nSEARCH RESULTS:\n"
-            + json.dumps(search_results[:20], indent=2)
+            + json.dumps(search_results[:15], indent=2)
         )
         payload = {
             "model": "gpt-4o-mini",
@@ -282,6 +282,9 @@ def ai_enrich_listings(search_results):
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
+        print(f"OpenAI returned {len(content)} characters for property extraction.")
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
         parsed = json.loads(content)
         if isinstance(parsed, list):
             allowed_links = {
@@ -400,7 +403,7 @@ def call_live_search_provider(query):
                     "id": build_listing_id(item["url"]),
                     "title": item.get("title", ""),
                     "price": extract_price(content),
-                    "content": source_content[:5000],
+                    "content": source_content[:3000],
                     "phone_evidence": extract_phone(content),
                     "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
