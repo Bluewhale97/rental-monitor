@@ -213,7 +213,7 @@ def find_official_property_site(property_hint, address):
             "https://api.tavily.com/search",
             json={
                 "api_key": TAVILY_API_KEY,
-                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability',
+                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability commute to Legend Biotech 08807',
                 "max_results": 5,
                 "search_depth": "advanced",
                 "include_raw_content": True,
@@ -254,9 +254,9 @@ def ai_enrich_listings(search_results):
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
             "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
-            "office phone AND email from the official site, formatted as 'Phone: ...; Email: ...', and the link must not be a listing portal. "
-            "sq_ft must contain the published area in square feet; exclude records where area is not supported. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
-            f"availability must be exactly 'Yes - {MOVE_IN_DATE}' only when the source confirms availability on that date, or 'No - {MOVE_IN_DATE}' when the source says it is unavailable. Exclude records where the date is not supported. "
+            "office phone and/or email from the official site, formatted as 'Phone: ...; Email: ...', and the link must not be a listing portal. Use 'Not listed' for a contact method absent from evidence. "
+            "sq_ft must contain the published area in square feet, or 'Not listed' when absent. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
+            f"availability must be 'Yes - {MOVE_IN_DATE}' or 'No - {MOVE_IN_DATE}' when the source confirms that date; otherwise use 'Not confirmed - {MOVE_IN_DATE}' so the property can still be monitored. "
             "Set action exactly to 'appointment'. Format amenities as one plain string with these exact labels: "
             "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
             "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
@@ -298,7 +298,7 @@ def ai_enrich_listings(search_results):
                 if not isinstance(item, dict) or item.get("link") not in allowed_links:
                     rejection_counts["invalid or non-official link"] = rejection_counts.get("invalid or non-official link", 0) + 1
                     continue
-                if not all(item.get(field) for field in ("property", "address", "sq_ft", "type", "price", "commute", "contact", "availability")):
+                if not all(item.get(field) for field in ("property", "address", "type", "price", "commute", "contact", "availability")):
                     rejection_counts["missing required field"] = rejection_counts.get("missing required field", 0) + 1
                     continue
                 area_match = re.search(r"[0-9][0-9,]*", str(item["sq_ft"]))
@@ -314,10 +314,10 @@ def ai_enrich_listings(search_results):
                     if any(source.get("url") == item.get("link") for source in result.get("official_sources", []))
                 )
                 evidence = f"{candidate_evidence} {official_evidence}"
-                if not area_match or area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
+                if area_match and area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
                     rejection_counts["square footage not supported"] = rejection_counts.get("square footage not supported", 0) + 1
                     continue
-                if not re.match(rf"^(Yes|No) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
+                if not re.match(rf"^(Yes|No|Not confirmed) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
                     rejection_counts["move-in date not supported"] = rejection_counts.get("move-in date not supported", 0) + 1
                     continue
                 if not re.search(r"\b2b\d+(?:\.\d+)?b\b", str(item["type"]).lower()):
@@ -333,15 +333,12 @@ def ai_enrich_listings(search_results):
                     rejection_counts["commute invalid or over limit"] = rejection_counts.get("commute invalid or over limit", 0) + 1
                     continue
                 contact = normalize_contact(item.get("contact"))
-                if (
-                    "Phone:" not in contact
-                    or "Email:" not in contact
-                    or not extract_phone(contact)
-                    or not extract_email(contact)
-                ):
+                if "Phone:" not in contact and "Email:" not in contact:
                     rejection_counts["phone or email missing"] = rejection_counts.get("phone or email missing", 0) + 1
                     continue
-                if extract_phone(contact) not in evidence or extract_email(contact) not in evidence:
+                phone = extract_phone(contact)
+                email = extract_email(contact)
+                if (phone and phone not in evidence) or (email and email not in evidence):
                     rejection_counts["phone or email not supported"] = rejection_counts.get("phone or email not supported", 0) + 1
                     continue
                 item["id"] = build_listing_id(item["link"])
