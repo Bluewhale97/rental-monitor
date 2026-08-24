@@ -27,6 +27,7 @@ LIVE_LISTINGS_FILE = os.getenv("LIVE_LISTINGS_FILE", "live_listings.json")
 SEARCH_LOCATION = os.getenv("SEARCH_LOCATION", "Bridgewater, NJ")
 MIN_BEDS = os.getenv("MIN_BEDS", "2")
 MAX_PRICE = os.getenv("MAX_PRICE", "3000")
+MOVE_IN_DATE = os.getenv("MOVE_IN_DATE", "2026-12-01")
 SEARCH_QUERY = os.getenv(
     "SEARCH_QUERY",
     f"current 2 bedroom apartment or townhouse rentals near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} "
@@ -87,6 +88,11 @@ def extract_price(text):
 
 def extract_phone(text):
     match = re.search(r"(?:\+?1[\s.-]?)?\(?[2-9][0-9]{2}\)?[\s.-][0-9]{3}[\s.-][0-9]{4}", text or "")
+    return match.group(0).strip() if match else ""
+
+
+def extract_email(text):
+    match = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text or "")
     return match.group(0).strip() if match else ""
 
 
@@ -161,7 +167,7 @@ def find_official_property_site(property_hint, address):
             "https://api.tavily.com/search",
             json={
                 "api_key": TAVILY_API_KEY,
-                "query": f'"{property_hint}" "{address}" official website leasing office phone',
+                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability',
                 "max_results": 5,
                 "search_depth": "advanced",
             },
@@ -197,10 +203,13 @@ def ai_enrich_listings(search_results):
             "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
             "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
-            "Return a JSON array with exactly these fields: id, property, address, type, price, amenities, commute, contact, link. "
+            f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, unit, type, price, amenities, commute, contact, availability, action, link. "
             "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
-            "office phone or official leasing URL, and the link must not be a listing portal. Format amenities as one plain string with these exact labels: "
+            "office phone AND email from the official site, formatted as 'Phone: ...; Email: ...', and the link must not be a listing portal. "
+            f"unit must contain the unit number when published, or 'Not listed'; type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
+            f"availability must be exactly 'Yes - {MOVE_IN_DATE}' only when the source confirms availability on that date, or 'No - {MOVE_IN_DATE}' when the source says it is unavailable. Exclude records where the date is not supported. "
+            "Set action exactly to 'appointment'. Format amenities as one plain string with these exact labels: "
             "In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; "
             "Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed. "
             "Use Not listed when the source does not say; never guess.\n\nSEARCH RESULTS:\n"
@@ -236,11 +245,23 @@ def ai_enrich_listings(search_results):
             for item in parsed:
                 if not isinstance(item, dict) or item.get("link") not in allowed_links:
                     continue
-                if not all(item.get(field) for field in ("property", "address", "price", "commute", "contact")):
+                if not all(item.get(field) for field in ("property", "address", "type", "price", "commute", "contact", "availability")):
+                    continue
+                if not re.match(rf"^(Yes|No) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
+                    continue
+                contact = normalize_contact(item.get("contact"))
+                if (
+                    "Phone:" not in contact
+                    or "Email:" not in contact
+                    or not extract_phone(contact)
+                    or not extract_email(contact)
+                ):
                     continue
                 item["id"] = build_listing_id(item["link"])
+                item["unit"] = item.get("unit") or "Not listed"
+                item["action"] = "appointment"
                 item["amenities"] = format_amenities(item.get("amenities"))
-                item["contact"] = normalize_contact(item.get("contact"))
+                item["contact"] = contact
                 if is_portal_url(item["link"]):
                     continue
                 cleaned.append(item)
@@ -291,7 +312,7 @@ def call_live_search_provider(query):
                 })
             official_candidates = []
             for candidate in candidates[:10]:
-                official_sources = find_official_property_site(candidate["title"], SEARCH_LOCATION)
+                official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
                 if official_sources:
                     candidate["official_sources"] = official_sources
                     official_candidates.append(candidate)
@@ -419,8 +440,8 @@ def load_live_listings():
 def update_csv_database(new_listings):
     file_exists = os.path.exists(CSV_DATABASE)
     fieldnames = [
-        "id", "property", "address", "type", "price", "amenities",
-        "commute", "contact", "link", "first_seen_date",
+        "id", "property", "address", "unit", "type", "price", "amenities",
+        "commute", "contact", "availability", "action", "link", "first_seen_date",
     ]
     existing_rows = {}
     if file_exists:
@@ -432,6 +453,9 @@ def update_csv_database(new_listings):
                 if "apt_name" in row and "property" not in row:
                     row["property"] = row.pop("apt_name")
                 row.setdefault("address", "")
+                row.setdefault("unit", "Not listed")
+                row.setdefault("availability", "")
+                row.setdefault("action", "appointment")
                 if not row.get("property") or not row.get("address"):
                     continue
                 row["amenities"] = format_amenities(row.get("amenities"))
@@ -445,11 +469,14 @@ def update_csv_database(new_listings):
             existing_rows[item_id].update({
                 "property": item.get("property", item.get("name", existing_rows[item_id].get("property", ""))),
                 "address": item.get("address", existing_rows[item_id].get("address", "")),
+                    "unit": item.get("unit", existing_rows[item_id].get("unit", "Not listed")),
                 "type": item.get("type", existing_rows[item_id].get("type", "")),
                 "price": item.get("price", existing_rows[item_id]["price"]),
                 "amenities": item.get("amenities", existing_rows[item_id].get("amenities", "")),
                 "commute": item.get("commute", existing_rows[item_id].get("commute", "")),
                 "contact": item.get("contact", existing_rows[item_id].get("contact", "")),
+                    "availability": item.get("availability", existing_rows[item_id].get("availability", "")),
+                    "action": "appointment",
                 "link": item.get("link", existing_rows[item_id]["link"]),
             })
         else:
@@ -457,11 +484,14 @@ def update_csv_database(new_listings):
                 "id": item_id,
                 "property": item.get("property", item.get("name")),
                 "address": item.get("address"),
+                "unit": item.get("unit", "Not listed"),
                 "type": item.get("type"),
                 "price": item.get("price"),
                 "amenities": format_amenities(item.get("amenities")),
                 "commute": item.get("commute"),
                 "contact": normalize_contact(item.get("contact")),
+                "availability": item.get("availability"),
+                "action": "appointment",
                 "link": item.get("link"),
                 "first_seen_date": today,
             }
@@ -515,13 +545,15 @@ def run_scan(dry_run=False):
         <tr style="border-bottom: 1px solid #eaeaea;">
             <td style="padding: 10px; font-weight: bold; color: #333; font-size: 13px;">{item.get('property', item.get('name'))}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('address')}</td>
+            <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('unit', 'Not listed')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('type')}</td>
             <td style="padding: 10px; color: #2c7a7b; font-weight: bold; font-size: 13px;">{item.get('price')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('amenities', 'In-unit laundry, Disposal')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('commute')}</td>
             <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('contact', 'N/A')}</td>
+            <td style="padding: 10px; color: #555; font-size: 13px;">{item.get('availability')}</td>
             <td style="padding: 10px; text-align: right; font-size: 13px;">
-                <a href="{item.get('link')}" style="background-color: #3182ce; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px;">Link</a>
+                <a href="{item.get('link')}" style="background-color: #3182ce; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px;">Appointment</a>
             </td>
         </tr>
         """
@@ -538,11 +570,13 @@ def run_scan(dry_run=False):
                     <tr style="background-color: #edf2f7; text-align: left;">
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Property</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Address</th>
+                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Unit</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Type</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Price</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Amenities</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Commute</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px;">Contact</th>
+                        <th style="padding: 10px; color: #4a5568; font-size: 12px;">Availability</th>
                         <th style="padding: 10px; color: #4a5568; font-size: 12px; text-align: right;">Action</th>
                     </tr>
                 </thead>

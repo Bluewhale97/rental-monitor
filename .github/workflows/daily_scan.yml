@@ -36,6 +36,7 @@ jobs:
           SEARCH_LOCATION: "Bridgewater, NJ"
           MIN_BEDS: "2"
           MAX_PRICE: "3000"
+          MOVE_IN_DATE: "2026-12-01"
         run: |
           test -n "$TAVILY_API_KEY" || (echo "Missing GitHub secret: TAVILY_API_KEY" && exit 1)
           test -n "$OPENAI_API_KEY" || (echo "Missing GitHub secret: OPENAI_API_KEY for deep property extraction" && exit 1)
