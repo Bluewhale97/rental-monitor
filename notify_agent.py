@@ -222,15 +222,16 @@ def ai_enrich_listings(search_results):
 
     try:
         prompt = (
-            "You are a meticulous rental research assistant. Extract only real, current, professionally managed "
-            f"2-bedroom apartments or townhouses within a {COMMUTE_LIMIT}-minute drive of Legend Biotech, 08807, under ${MAX_PRICE}. "
-            "Two bathrooms are preferred but not mandatory. A leasing office or property-management contact is mandatory; "
-            "exclude private landlords, room rentals, generic search pages, unrelated articles, and properties without a "
-            "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
+            "You are a rental research assistant. Review every supplied live-search result and return plausible professionally managed "
+            f"2-bedroom apartment or townhouse properties within a {COMMUTE_LIMIT}-minute drive of Legend Biotech, 08807, under or near ${MAX_PRICE}. "
+            "Return plausible candidates even when optional details are missing; use 'Not listed' or 'Not confirmed' rather than returning an empty array. "
+            "Exclude only private landlords, room rentals, obviously unrelated pages, and results that clearly are not rental properties. "
+            "Do not infer or invent facts. Use only evidence in each result. "
             "In-unit laundry is mandatory and must be confirmed Yes; garbage disposal is preferred but optional, so report Yes, No, or Not listed. "
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
-            "property must be the actual community/property name, link must exactly match one supplied source URL, commute must say "
-            "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
+            "property should be the actual community/property name when the evidence provides it, otherwise use the best property identity supported by the result. "
+            "link must exactly match one supplied source URL. Commute must say '<number> min drive to Legend Biotech (08807)' when supported, otherwise use 'Not listed'. "
+            "Contact should include a leasing "
             "office phone and/or email from the supplied source evidence, formatted as 'Phone: ...; Email: ...'. Use 'Not listed' for a contact method absent from evidence. The source link may be a listing portal because the user will investigate the property independently. "
             "sq_ft must contain the published area in square feet, or 'Not listed' when absent. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
             f"availability must be 'Yes - {MOVE_IN_DATE}' or 'No - {MOVE_IN_DATE}' when the source confirms that date; otherwise use 'Not confirmed - {MOVE_IN_DATE}' so the property can still be monitored. "
@@ -264,6 +265,7 @@ def ai_enrich_listings(search_results):
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
         parsed = json.loads(content)
         if isinstance(parsed, list):
+            print(f"OpenAI parsed {len(parsed)} candidate records before validation.")
             allowed_links = {canonical_url(item.get("link")): item.get("link") for item in search_results}
             cleaned = []
             rejection_counts = {}
