@@ -212,85 +212,6 @@ def is_portal_url(url):
     return any(hostname == domain or hostname.endswith(f".{domain}") for domain in PORTAL_DOMAINS)
 
 
-def find_official_property_site(property_hint, address):
-    if not TAVILY_API_KEY:
-        return []
-    try:
-        response = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": TAVILY_API_KEY,
-                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability commute to Legend Biotech 08807',
-                "max_results": 5,
-                "search_depth": "advanced",
-                "include_raw_content": True,
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        return [
-            {
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "content": (item.get("raw_content") or item.get("content", ""))[:3000],
-            }
-            for item in response.json().get("results", [])
-            if item.get("url") and not is_portal_url(item["url"])
-        ]
-    except Exception as exc:
-        print(f"Official property-site lookup failed: {type(exc).__name__}: {exc!r}")
-        return []
-
-
-def find_commute_evidence(address):
-    if not TAVILY_API_KEY or not address:
-        return ""
-    try:
-        response = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": TAVILY_API_KEY,
-                "query": f'"{address}" to Legend Biotech 08807 driving time minutes',
-                "max_results": 3,
-                "search_depth": "advanced",
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        return " ".join(
-            f"{item.get('title', '')} {item.get('content', '')}"
-            for item in response.json().get("results", [])
-        )[:3000]
-    except Exception as exc:
-        print(f"Commute lookup failed: {type(exc).__name__}: {exc!r}")
-        return ""
-    try:
-        response = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": TAVILY_API_KEY,
-                "query": f'"{property_hint}" "{address}" official property website leasing office phone email rental availability commute to Legend Biotech 08807',
-                "max_results": 5,
-                "search_depth": "advanced",
-                "include_raw_content": True,
-            },
-            timeout=45,
-        )
-        response.raise_for_status()
-        return [
-            {
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "content": (item.get("raw_content") or item.get("content", ""))[:3000],
-            }
-            for item in response.json().get("results", [])
-            if item.get("url") and not is_portal_url(item["url"])
-        ]
-    except Exception as exc:
-        print(f"Official property-site lookup failed: {type(exc).__name__}: {exc!r}")
-        return []
-
-
 def ai_enrich_listings(search_results):
     if not OPENAI_API_KEY or not search_results:
         print("Deep property extraction requires the OPENAI_API_KEY secret.")
@@ -308,9 +229,9 @@ def ai_enrich_listings(search_results):
             "verifiable full street address or current price. Do not infer or invent facts. Use only evidence in each result. "
             "In-unit laundry is mandatory and must be confirmed Yes; garbage disposal is preferred but optional, so report Yes, No, or Not listed. "
             f"The requested move-in date is {MOVE_IN_DATE}. Return a JSON array with exactly these fields: id, property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
-            "property must be the actual community/property name, link must exactly match one supplied official-site URL, commute must say "
+            "property must be the actual community/property name, link must exactly match one supplied source URL, commute must say "
             "'<number> min drive to Legend Biotech (08807)' or be omitted if not supported, and contact must include a leasing "
-            "office phone and/or email from the official site, formatted as 'Phone: ...; Email: ...', and the link must not be a listing portal. Use 'Not listed' for a contact method absent from evidence. "
+            "office phone and/or email from the supplied source evidence, formatted as 'Phone: ...; Email: ...'. Use 'Not listed' for a contact method absent from evidence. The source link may be a listing portal because the user will investigate the property independently. "
             "sq_ft must contain the published area in square feet, or 'Not listed' when absent. type must contain the actual bedroom and bathroom count such as 'Apartment - 2b2b' or 'Townhouse - 2b2.5b'; "
             f"availability must be 'Yes - {MOVE_IN_DATE}' or 'No - {MOVE_IN_DATE}' when the source confirms that date; otherwise use 'Not confirmed - {MOVE_IN_DATE}' so the property can still be monitored. "
             "Set action exactly to 'appointment'. Format amenities as one plain string with these exact labels: "
@@ -343,11 +264,7 @@ def ai_enrich_listings(search_results):
             content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
         parsed = json.loads(content)
         if isinstance(parsed, list):
-            allowed_links = {
-                canonical_url(source.get("url")): source.get("url")
-                for item in search_results
-                for source in item.get("official_sources", [])
-            }
+            allowed_links = {canonical_url(item.get("link")): item.get("link") for item in search_results}
             cleaned = []
             rejection_counts = {}
             for item in parsed:
@@ -357,20 +274,13 @@ def ai_enrich_listings(search_results):
                 if not all(item.get(field) for field in ("property", "address", "type", "price", "commute", "contact", "availability")):
                     rejection_counts["missing required field"] = rejection_counts.get("missing required field", 0) + 1
                     continue
-                area_match = re.search(r"[0-9][0-9,]*", str(item["sq_ft"]))
-                official_evidence = " ".join(
-                    source.get("content", "")
+                area_match = re.search(r"[0-9][0-9,]*", str(item.get("sq_ft", "")))
+                evidence = " ".join(
+                    result.get("content", "")
                     for result in search_results
-                    for source in result.get("official_sources", [])
-                    if canonical_url(source.get("url")) == canonical_url(item.get("link"))
+                    if canonical_url(result.get("link")) == canonical_url(item.get("link"))
                 )
-                candidate_evidence = " ".join(
-                    f"{result.get('content', '')} {result.get('commute_evidence', '')}"
-                    for result in search_results
-                    if any(canonical_url(source.get("url")) == canonical_url(item.get("link")) for source in result.get("official_sources", []))
-                )
-                evidence = f"{candidate_evidence} {official_evidence}"
-                if area_match and area_match.group(0).replace(",", "") not in official_evidence.replace(",", ""):
+                if area_match and area_match.group(0).replace(",", "") not in evidence.replace(",", ""):
                     rejection_counts["square footage not supported"] = rejection_counts.get("square footage not supported", 0) + 1
                     continue
                 if not re.match(rf"^(Yes|No|Not confirmed) - {re.escape(MOVE_IN_DATE)}$", str(item["availability"])):
@@ -404,9 +314,6 @@ def ai_enrich_listings(search_results):
                 item["contact"] = contact
                 if not has_required_amenities(item["amenities"]):
                     rejection_counts["in-unit laundry not confirmed"] = rejection_counts.get("in-unit laundry not confirmed", 0) + 1
-                    continue
-                if is_portal_url(item["link"]):
-                    rejection_counts["final link is a portal"] = rejection_counts.get("final link is a portal", 0) + 1
                     continue
                 cleaned.append(item)
             print(f"AI accepted {len(cleaned)} verified property records; rejection details: {rejection_counts or 'none'}")
@@ -462,18 +369,8 @@ def call_live_search_provider(query):
                     "drive_evidence": extract_drive_time(content),
                     "link": item["url"],
                 })
-            official_candidates = []
-            print(f"Tavily produced {len(candidates)} candidates with usable URLs; checking up to 25 official-site matches.")
-            for candidate in candidates[:25]:
-                official_sources = find_official_property_site(candidate["title"], candidate["content"][:500])
-                if official_sources:
-                    candidate["official_sources"] = official_sources
-                    candidate["commute_evidence"] = find_commute_evidence(
-                        f"{candidate['title']} {candidate['content'][:500]}"
-                    )
-                    official_candidates.append(candidate)
-            print(f"Official-site verification found {len(official_candidates)} candidate matches.")
-            enriched = ai_enrich_listings(official_candidates)
+            print(f"Sending up to 25 source candidates to OpenAI for requirement filtering.")
+            enriched = ai_enrich_listings(candidates[:25])
             print(f"AI accepted {len(enriched)} verified property records from Tavily results.")
             return enriched
         except Exception as exc:
