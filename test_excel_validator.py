@@ -2,7 +2,7 @@ import os
 
 from openpyxl import Workbook
 
-from excel_validator import normalize_field, repair_workbook, validate_row
+from excel_validator import is_non_listing_row, normalize_field, repair_workbook, validate_row, validate_workbook
 
 
 def test_normalize_field_removes_extra_whitespace_and_trailing_text():
@@ -45,3 +45,18 @@ def test_repair_workbook_handles_merged_cells(tmp_path):
     result = repair_workbook(str(workbook_path))
     assert result["changed"] in (True, False)
     assert workbook_path.exists()
+
+
+def test_summary_and_benchmark_rows_are_skipped(tmp_path):
+    workbook_path = tmp_path / "candidate_rows.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Apartment Comparison"
+    ws.append(["Name", "Status", "Priority", "Address", "Price", "Beds", "Baths", "Property Type", "Amenities", "Commute", "Website"])
+    ws.append(["Current home", "Current home", "Benchmark", "", "", "", "", "", "", "", ""])
+    ws.append(["Sunset Terrace", "New candidate", "Priority", "123 Main St, Somerset, NJ", "$2900", "2", "2", "Apartment", "In-unit laundry; Disposal", "20 min", "https://example.com"])
+    wb.save(workbook_path)
+
+    assert is_non_listing_row({"Name": "Current home", "Status": "Current home", "Priority": "Benchmark"}, "Apartment Comparison") is True
+    result = validate_workbook(str(workbook_path))
+    assert all("Current home" not in str(issue["record"].get("Name", "")) for issue in result["issues"])
