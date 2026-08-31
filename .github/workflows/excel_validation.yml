@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 9 * * *'
 
+permissions:
+  contents: write
+
 jobs:
   validate-excel:
     runs-on: ubuntu-latest
@@ -35,8 +38,16 @@ jobs:
           python excel_validator.py
 
       - name: Commit corrected workbook if needed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
           git add "Central_NJ_Apartment_Comparison_WITH_TOUR_CLUSTERS_FINAL.xlsx"
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Validate and normalize apartment workbook [skip ci]" && git push)
+          if git diff --cached --quiet; then
+            echo "No workbook changes to commit."
+            exit 0
+          fi
+          git commit -m "Validate and normalize apartment workbook [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
