@@ -1,0 +1,40 @@
+name: Excel Validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * *'
+
+jobs:
+  validate-excel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install openpyxl
+
+      - name: Validate apartment workbook
+        env:
+          APARTMENT_EXCEL_PATH: "Central_NJ_Apartment_Comparison_WITH_TOUR_CLUSTERS_FINAL.xlsx"
+          MAX_PRICE: "3200"
+          COMMUTE_LIMIT: "30"
+          MIN_BEDS: "2"
+          MIN_BATHS: "2"
+        run: |
+          python excel_validator.py
+
+      - name: Commit corrected workbook if needed
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add "Central_NJ_Apartment_Comparison_WITH_TOUR_CLUSTERS_FINAL.xlsx"
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Validate and normalize apartment workbook [skip ci]" && git push)

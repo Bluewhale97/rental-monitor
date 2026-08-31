@@ -36,20 +36,18 @@ SEARCH_QUERY = os.getenv(
     "official property leasing office",
 )
 SEARCH_QUERIES = [
-    SEARCH_QUERY,
-    f"2 bedroom professionally managed apartments near {SEARCH_AREAS} under ${MAX_PRICE} leasing office",
-    f"2 bedroom managed townhomes for rent near {SEARCH_AREAS} under ${MAX_PRICE} property website",
-    f"new 2 bedroom rental communities near {SEARCH_AREAS} official leasing availability",
-    f"2 bedroom apartments for rent Bridgewater Somerville Bound Brook South Bound Brook NJ under ${MAX_PRICE}",
-    f"2 bedroom townhomes for rent Branchburg Hillsborough Franklin Township NJ under ${MAX_PRICE} leasing office",
-    f"2 bedroom apartment community website Somerset County NJ in-unit laundry leasing office",
-    f"2 bedroom rental community October 31 2026 Somerset County NJ official website",
+    f"official 2 bedroom apartments near {SEARCH_LOCATION} 08807 in-unit laundry under ${MAX_PRICE} managed community",
+    f"official 2 bedroom townhomes near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} managed leasing office",
+    f"Bridgewater NJ 08807 2 bedroom apartment official website in-unit laundry",
+    f"Somerset County NJ 2 bedroom managed apartment official leasing office under ${MAX_PRICE}",
+    f"2 bedroom apartment communities near {SEARCH_LOCATION} 08807 official website",
+    f"2 bedroom rental communities Bridgewater NJ official leasing office under ${MAX_PRICE}",
 ]
 GENERAL_MATCH_QUERIES = [
-    f"2 bedroom apartments near {SEARCH_LOCATION} 08807 in-unit laundry official property website",
-    f"managed 2 bedroom townhomes near {SEARCH_LOCATION} 08807 under ${MAX_PRICE} official leasing office",
-    f"2 bedroom rental communities Somerset County NJ with in-unit laundry and 30 minute commute to 08807",
-    f"Bridgewater NJ apartment communities 2 bed 2 bath in-unit laundry official website",
+    f"{SEARCH_LOCATION} 08807 2 bedroom apartment official website in-unit laundry",
+    f"managed 2 bedroom townhomes {SEARCH_LOCATION} 08807 official property website",
+    f"Bridgewater NJ 2 bedroom apartment community with in-unit laundry official leasing office",
+    f"Somerset County NJ apartment official website 2 bed in-unit laundry under ${MAX_PRICE}",
 ]
 SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "tavily").lower()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -255,6 +253,68 @@ def ai_search_property_links(property_name):
     return []
 
 
+def ai_extract_from_page_text(property_name, url, page_text):
+    if not page_text or not OPENAI_API_KEY:
+        return {}
+    try:
+        prompt = (
+            "You are reading one exact property website. Extract the rental listing information only from this page. "
+            "Do not use the title or the search snippet as a substitute for page evidence. "
+            "If a field is clearly visible on the page, use the exact value; if it is not visible, use 'Not listed'. "
+            "Do not invent details or mark a visible property name as missing just because a field is not on the page. "
+            "Return valid JSON only with keys: property, address, sq_ft, type, price, amenities, commute, contact, availability, action, link. "
+            "property should be the actual community name if the page shows it. "
+            "address should be the full street address if present, else 'Not listed'. "
+            "sq_ft should be the number + square feet wording if present, else 'Not listed'. "
+            "type should be a string like 'Apartment - 2b2b' or 'Townhouse - 2b2.5b' when visible. "
+            "price should be the rent shown on the page, else 'Price not listed'. "
+            "amenities should be exactly: 'In-unit laundry: Yes/No/Not listed; Garbage disposal: Yes/No/Not listed; Gym: Yes/No/Not listed; Pool: Yes/No/Not listed; Move-in special: Yes/No/Not listed; Mandatory fees: Yes/No/Not listed'. "
+            "commute must be 'X min drive to Legend Biotech (08807)' only when the page clearly states it; otherwise 'Not listed'. "
+            "contact must include a leasing office phone and/or email like 'Phone: ...; Email: ...', otherwise 'Not listed'. "
+            f"availability must be 'Yes - {MOVE_IN_DATE}' / 'No - {MOVE_IN_DATE}' / 'Not confirmed - {MOVE_IN_DATE}'. "
+            "action must be 'appointment'.\n\nPROPERTY NAME: "
+            + property_name + "\nPAGE URL: " + url + "\nPAGE CONTENT:\n" + page_text[:20000]
+        )
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "Return valid JSON only. No markdown."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.1,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            parsed["link"] = url
+            parsed["id"] = build_listing_id(url)
+            parsed["property"] = parsed.get("property") or property_name or "Property name not listed"
+            parsed["address"] = parsed.get("address") or "Not listed"
+            parsed["sq_ft"] = parsed.get("sq_ft") or "Not listed"
+            parsed["type"] = parsed.get("type") or "Apartment - 2b2b"
+            parsed["price"] = parsed.get("price") or "Price not listed"
+            parsed["amenities"] = parsed.get("amenities") or "In-unit laundry: Not listed; Garbage disposal: Not listed; Gym: Not listed; Pool: Not listed; Move-in special: Not listed; Mandatory fees: Not listed"
+            parsed["commute"] = parsed.get("commute") or "Not listed"
+            parsed["contact"] = parsed.get("contact") or "Not listed"
+            parsed["availability"] = parsed.get("availability") or f"Not confirmed - {MOVE_IN_DATE}"
+            parsed["action"] = parsed.get("action") or "appointment"
+            return parsed
+    except Exception as exc:
+        print(f"OpenAI page extraction failed for {property_name}: {type(exc).__name__}: {exc!r}")
+    return {}
+
+
 def fetch_property_page_details(property_name, url):
     if not url:
         return {}
@@ -265,6 +325,11 @@ def fetch_property_page_details(property_name, url):
         text = " ".join(soup.stripped_strings)
         if not text:
             return {}
+
+        ai_parsed = ai_extract_from_page_text(property_name, url, text)
+        if ai_parsed:
+            return ai_parsed
+
         match = {
             "property": property_name,
             "address": re.search(r"(?:\d+\s+[A-Za-z0-9.]+(?:\s+[A-Za-z0-9.]+)*,?\s*(?:Bridgewater|Somerset|Bound Brook|Somerville|Franklin|Hillsborough)[^\n]{0,120})", text, re.IGNORECASE),
@@ -328,8 +393,8 @@ def ai_enrich_listings(search_results):
                     "https://api.tavily.com/search",
                     json={
                         "api_key": TAVILY_API_KEY,
-                        "query": f'"{property_name}" official website 2 bedroom apartment Bridgewater NJ 08807',
-                        "max_results": 10,
+                        "query": f'"{property_name}" Bridgewater NJ 08807 official website 2 bedroom apartment in-unit laundry',
+                        "max_results": 5,
                         "search_depth": "basic",
                         "include_answer": True,
                         "include_raw_content": True,
