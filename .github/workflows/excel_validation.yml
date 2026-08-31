@@ -22,13 +22,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install openpyxl
 
-      - name: Validate apartment workbook
+      - name: Validate apartment workbook with broad and deep review
         env:
           APARTMENT_EXCEL_PATH: "Central_NJ_Apartment_Comparison_WITH_TOUR_CLUSTERS_FINAL.xlsx"
           MAX_PRICE: "3200"
           COMMUTE_LIMIT: "30"
           MIN_BEDS: "2"
           MIN_BATHS: "2"
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python excel_validator.py
 
