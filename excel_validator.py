@@ -2,10 +2,18 @@ import csv
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-import requests
-from openpyxl.styles import PatternFill
+try:
+    import requests
+except ModuleNotFoundError as exc:
+    raise SystemExit("Missing dependency: requests. Install it with: pip install requests openpyxl") from exc
+
+try:
+    from openpyxl.styles import PatternFill
+except ModuleNotFoundError as exc:
+    raise SystemExit("Missing dependency: openpyxl. Install it with: pip install requests openpyxl") from exc
 
 EXCEL_PATH = os.getenv("APARTMENT_EXCEL_PATH", "Central_NJ_Apartment_Comparison_WITH_TOUR_CLUSTERS_FINAL.xlsx")
 MAX_PRICE = int(os.getenv("MAX_PRICE", "3200"))
