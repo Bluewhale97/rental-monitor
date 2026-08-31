@@ -116,6 +116,37 @@ def repair_row(row):
     return repaired
 
 
+def is_non_listing_row(record, sheet_title=None):
+    if sheet_title and "summary" in normalize_header(sheet_title):
+        return True
+
+    status = normalize_field(get_field_value(record, "Status") or "").lower()
+    priority = normalize_field(get_field_value(record, "Priority") or "").lower()
+    name = normalize_field(get_field_value(record, "Name", "Community Name", "Property") or "").lower()
+
+    if not any(value not in (None, "") for value in record.values()):
+        return True
+
+    if status in {"current home", "summary"}:
+        return True
+
+    if priority in {"benchmark"}:
+        return True
+
+    if not name:
+        return False
+
+    skip_markers = [
+        "central nj apartment search",
+        "rule",
+        "fixed monthly cost",
+        "space",
+        "laundry",
+        "summary",
+    ]
+    return any(marker in name for marker in skip_markers)
+
+
 def validate_row(row):
     issues = []
     normalized = {k: normalize_field(v) for k, v in row.items()} 
@@ -340,6 +371,46 @@ def ensure_validation_status_column(sheet):
     return normalized_headers.index("validation status") + 1
 
 
+def ensure_validation_notes_column(sheet):
+    headers = [cell.value for cell in sheet[1]]
+    normalized_headers = [normalize_header(header) for header in headers]
+    if "validation notes" not in normalized_headers:
+        sheet.cell(row=1, column=sheet.max_column + 1, value="Validation Notes")
+        return sheet.max_column
+    return normalized_headers.index("validation notes") + 1
+
+
+def ensure_verified_source_column(sheet):
+    headers = [cell.value for cell in sheet[1]]
+    normalized_headers = [normalize_header(header) for header in headers]
+    if "verified source" not in normalized_headers:
+        sheet.cell(row=1, column=sheet.max_column + 1, value="Verified Source")
+        return sheet.max_column
+    return normalized_headers.index("verified source") + 1
+
+
+def ensure_last_checked_column(sheet):
+    headers = [cell.value for cell in sheet[1]]
+    normalized_headers = [normalize_header(header) for header in headers]
+    if "last checked" not in normalized_headers:
+        sheet.cell(row=1, column=sheet.max_column + 1, value="Last Checked")
+        return sheet.max_column
+    return normalized_headers.index("last checked") + 1
+
+
+def build_validation_note(record, corrected=None, passes=False):
+    parts = []
+    if corrected:
+        for key, value in corrected.items():
+            if value not in (None, ""):
+                parts.append(f"{key}: {value}")
+    if passes:
+        parts.append("Matched profile: 2BR/2BA, managed community, budget, commute, laundry and disposal reviewed.")
+    if not parts:
+        parts.append("Reviewed against 2BR apartment profile near 08807; additional live verification required.")
+    return " | ".join(parts)
+
+
 def validate_and_correct_workbook(path=EXCEL_PATH):
     from openpyxl import load_workbook
 
@@ -349,21 +420,29 @@ def validate_and_correct_workbook(path=EXCEL_PATH):
         if sheet.max_row < 2:
             continue
         status_col = ensure_validation_status_column(sheet)
+        notes_col = ensure_validation_notes_column(sheet)
+        source_col = ensure_verified_source_column(sheet)
+        last_checked_col = ensure_last_checked_column(sheet)
         headers = [cell.value for cell in sheet[1]]
         for row_index in range(2, sheet.max_row + 1):
             record = {}
             for col_index, header in enumerate(headers, start=1):
                 value = sheet.cell(row=row_index, column=col_index).value
                 record[str(header)] = value
-            if not any(value not in (None, "") for value in record.values()):
+            if is_non_listing_row(record, sheet.title):
                 continue
             result = validate_row(record)
+            corrections = {}
             if result["passes"]:
                 sheet.cell(row=row_index, column=status_col, value="Pass")
+                sheet.cell(row=row_index, column=notes_col, value=build_validation_note(record, passes=True))
+                sheet.cell(row=row_index, column=source_col, value="Internal profile check")
+                sheet.cell(row=row_index, column=last_checked_col, value="Auto-validated")
                 continue
 
             corrected = find_live_correction(record)
             if corrected:
+                corrections = corrected
                 for key, value in corrected.items():
                     for col_index, header in enumerate(headers, start=1):
                         if normalize_header(header) == normalize_header(key):
@@ -372,9 +451,15 @@ def validate_and_correct_workbook(path=EXCEL_PATH):
                                 changed = True
                             break
                 sheet.cell(row=row_index, column=status_col, value="Corrected")
+                sheet.cell(row=row_index, column=notes_col, value=build_validation_note(record, corrected=corrected, passes=False))
+                sheet.cell(row=row_index, column=source_col, value="Tavily + OpenAI deep dive")
+                sheet.cell(row=row_index, column=last_checked_col, value="Auto-corrected")
                 highlight_corrected_cells(sheet, row_index, corrected.keys())
             else:
                 sheet.cell(row=row_index, column=status_col, value="Needs review")
+                sheet.cell(row=row_index, column=notes_col, value="Broad and deep review did not yield enough current evidence; requires manual follow-up.")
+                sheet.cell(row=row_index, column=source_col, value="Insufficient live evidence")
+                sheet.cell(row=row_index, column=last_checked_col, value="Needs manual review")
         workbook.save(path)
     return {"path": path, "changed": changed}
 
@@ -393,7 +478,7 @@ def validate_workbook(path=EXCEL_PATH):
         keys = [str(cell or "").strip() for cell in first_row]
         for row in sheet.iter_rows(min_row=2, values_only=True):
             record = {keys[idx]: value for idx, value in enumerate(row[: len(keys)])}
-            if not any(value not in (None, "") for value in record.values()):
+            if is_non_listing_row(record, sheet.title):
                 continue
             result = validate_row(record)
             rows.append({"sheet": sheet.title, "record": record, "result": result})
